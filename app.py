@@ -1,51 +1,55 @@
 import os
-import base64
-import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 import gradio as gr
+from faster_whisper import WhisperModel
 
 load_dotenv()
 
+#client = OpenAI(
+#    api_key=os.environ["DEEPINFRA_API_KEY"],
+#    base_url="https://api.deepinfra.com/v1/openai",
+#)
+#
+#MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+# (local Ollama):
 client = OpenAI(
-    api_key=os.environ["DEEPINFRA_API_KEY"],
-    base_url="https://api.deepinfra.com/v1/openai",
+    api_key="ollama",
+    base_url="http://localhost:11434/v1",
 )
+MODEL = "llama3.1:8b"
 
-MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+# Load once at startup (this takes a few seconds — that's normal, it's loading the model into VRAM)
+stt_model = WhisperModel("medium", device="cuda", compute_type="float16")
 
-# Each character has ONE fixed voice name. Never changes. No "instruction" field.
+# Each character has ONE fixed voice name. Never changes.
 CHARACTERS = {
     "Genie": {
         "prompt": """You are the Genie of the lamp, straight out of the 
         One Thousand and One Nights. Loud, theatrical, a show-off. You 
         grant "wishes" by answering questions with flair and humor. 
         Keep replies short (2-4 sentences). Never break character.""",
-        "voice": "Ryan",
     },
     "Aladdin": {
         "prompt": """You are Aladdin, a quick, cheeky, street-smart young 
         man. Friendly and a bit of a charmer. Keep replies short 
         (2-4 sentences). Never break character.""",
-        "voice": "Dylan",
     },
     "The Princess": {
         "prompt": """You are a sharp, independent princess who knows a 
         great deal and refuses to be talked down to. Witty and 
         confident. Keep replies short (2-4 sentences). Never break character.""",
-        "voice": "Serena",
     },
     "Iago": {
         "prompt": """You are Iago, a sarcastic parrot who complains about 
         everything. Comic relief, dry wit, never impressed. Keep replies 
         short (1-3 sentences). Never break character.""",
-        "voice": "Uncle_Fu",
     },
     "The Sorcerer": {
         "prompt": """You are a smooth, slightly menacing sorcerer who 
         answers in riddles. Mysterious and calculating. Keep replies 
         short (2-4 sentences). Never break character.""",
-        "voice": "Eric",
     },
     "The Cave of Wonders": {
         "prompt": """You are the Cave of Wonders, an ancient, booming, 
@@ -53,22 +57,20 @@ CHARACTERS = {
         You speak in dramatic warnings and riddles about who is worthy 
         to enter. Example tone: "WHO DISTURBS MY SLUMBER?" Keep replies 
         short (1-3 sentences), deep and theatrical. Never break character.""",
-        "voice": "Eric",
     },
 }
 
-conversation_histories = {
-    name: [{"role": "system", "content": data["prompt"]}]
-    for name, data in CHARACTERS.items()
-}
+conversation_histories = {}  # start with empty dict
+
+for name, data in CHARACTERS.items():
+    conversation_histories[name] = [
+        {"role": "system", "content": data["prompt"]}
+    ]
 
 def transcribe(filepath):
-    with open(filepath, "rb") as audio_file:
-        transcript = client.audio.transcriptions.create(
-            model="openai/whisper-large-v3",
-            file=audio_file
-        )
-    return transcript.text
+    segments, info = stt_model.transcribe(filepath, beam_size=5)
+    text = " ".join(segment.text for segment in segments).strip()
+    return text
 
 def ask_character(character_name, message):
     history = conversation_histories[character_name]
@@ -106,25 +108,25 @@ def add_cave_echo(filename):
 
     deeper.export(filename, format="wav")
 
+import subprocess
+
+VOICE_MODELS = {
+    "Genie": "en_US-ryan-high",
+    "Aladdin": "en_US-joe-medium",
+    "The Princess": "en_US-amy-medium",
+    "Iago": "en_US-danny-low",
+    "The Sorcerer": "en_US-norman-medium",
+    "The Cave of Wonders": "en_US-norman-medium",  # echo effect will differentiate it
+}
+
 def speak(text, character_name, filename="reply.wav"):
-    voice = CHARACTERS[character_name]["voice"]
-    response = requests.post(
-        "https://api.deepinfra.com/v1/inference/Qwen/Qwen3-TTS",
-        headers={
-            "Authorization": f"Bearer {os.environ['DEEPINFRA_API_KEY']}",
-            "Content-Type": "application/json"
-        },
-        json={"input": text, "voice": voice}
-    )
-    result = response.json()
-    audio_b64 = result["audio"].split(",", 1)[1]
-    audio_bytes = base64.b64decode(audio_b64)
-    with open(filename, "wb") as f:
-        f.write(audio_bytes)
+    voice = VOICE_MODELS[character_name]
+    subprocess.run([
+        "piper", "--model", voice, "--output_file", filename
+    ], input=text.encode("utf-8"))
 
     if character_name == "The Cave of Wonders":
         add_cave_echo(filename)
-
     return filename
 
 def chat_with_character(character_name, mic_audio):
