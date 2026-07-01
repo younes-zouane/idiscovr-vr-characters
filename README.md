@@ -105,6 +105,19 @@ Open `http://127.0.0.1:7860`, pick a character, hit Talk. Try turning off your w
 - Click "Talk"
 - Read the transcript and hear the character's reply
 
+## Stretch feature: two characters talking to each other
+
+A second tab lets you pick two characters, give them an opening line or topic, and watch them argue/banter back and forth automatically — no mic needed. Good for demos since it shows off personality and voice differences without requiring live input.
+
+- Pick **Character A** and **Character B** from the dropdowns
+- Enter an opening line/topic (e.g. *"What's the best wish anyone's ever asked you for?"*)
+- Set the number of turns (each turn = one character's reply; defaults to 6, so 3 lines each)
+- Click **"Let them talk"**
+
+Each character keeps its own separate conversation memory (from the main tab) and the turn-taking logic passes the previous reply as the next character's prompt, alternating back and forth. All turns are stitched into a single playable audio file (`conversation.wav`) with short pauses between lines, alongside a full text transcript.
+
+Genie vs. Iago is a good pairing to start with — theatrical showman vs. sarcastic parrot gives strong contrast in both writing style and voice.
+
 ## Notes
 
 - Each character keeps memory within a session (remembers what you told them earlier).
