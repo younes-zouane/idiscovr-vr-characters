@@ -115,24 +115,41 @@ def add_cave_echo(filename):
     deeper = deeper.set_frame_rate(sound.frame_rate)
     deeper.export(filename, format="wav")
 
-# ── TTS: Qwen3-TTS via DeepInfra ──
+# Voice mapping for Kokoro-82M
+# Available voices: af_heart, af_bella, af_sarah, af_nicole (female)
+#                   am_adam, am_michael, am_echo, am_liam (male)
+VOICE_MAP = {
+    "Genie":              "am_adam",    # deep, authoritative
+    "Aladdin":            "am_michael", # young, casual
+    "The Princess":       "af_sarah",   # clear, confident
+    "Iago":               "am_liam",    # lighter, slightly nasal
+    "The Sorcerer":       "am_echo",    # deeper, resonant
+    "The Cave of Wonders": "am_adam",   # deepest available
+}
+
 def speak(text, character_name, filename="reply.wav"):
-    voice = CHARACTERS[character_name]["voice"]
+    voice = VOICE_MAP[character_name]
     response = requests.post(
-        "https://api.deepinfra.com/v1/inference/Qwen/Qwen3-TTS",
+        "https://api.deepinfra.com/v1/inference/hexgrad/Kokoro-82M",
         headers={
             "Authorization": f"Bearer {os.environ['DEEPINFRA_API_KEY']}",
             "Content-Type": "application/json"
         },
-        json={"input": text, "voice": voice}
+        json={
+            "text": text,
+            "voice": voice,
+            "speed": 1.0
+        }
     )
     result = response.json()
     audio_b64 = result["audio"].split(",", 1)[1]
     audio_bytes = base64.b64decode(audio_b64)
     with open(filename, "wb") as f:
         f.write(audio_bytes)
+
     if character_name == "The Cave of Wonders":
         add_cave_echo(filename)
+
     return filename
 
 # ── Single character chat ──
@@ -152,7 +169,7 @@ def chat_with_character(character_name, mic_audio):
 
     print(f"STT (Whisper):  {t1-t0:.2f}s")
     print(f"LLM (Ollama):   {t2-t1:.2f}s")
-    print(f"TTS (Qwen3):    {t3-t2:.2f}s")
+    print(f"TTS (Kokoro):   {t3-t2:.2f}s")
     print(f"Total latency:  {t3-t0:.2f}s")
 
     return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path
