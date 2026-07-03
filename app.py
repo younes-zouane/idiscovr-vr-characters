@@ -9,6 +9,10 @@ from faster_whisper import WhisperModel
 from pydub import AudioSegment
 from pydub.effects import normalize
 import gradio as gr
+from kokoro import KPipeline
+import soundfile as sf
+import numpy as np
+import torch
 
 load_dotenv()
 
@@ -31,6 +35,9 @@ stt_model = WhisperModel(
     device="cuda",
     compute_type="float16"
 )
+
+# ── TTS: local Kokoro ──
+kokoro_pipeline = KPipeline(lang_code='a', device="cuda" if torch.cuda.is_available() else "cpu")
 
 # ── CHARACTERS: prompt + fixed Qwen3-TTS voice per character ──
 CHARACTERS = {
@@ -74,6 +81,14 @@ CHARACTERS = {
         "voice": "Aiden",
     },
 }
+CHARACTER_IMAGES = {
+    "Genie":               "character_images/genie.jpg",
+    "Aladdin":             "character_images/aladdin.jpg",
+    "The Princess":        "character_images/princess.jpg",
+    "Iago":                "character_images/iago.jpg",
+    "The Sorcerer":        "character_images/sorcerer.jpg",
+    "The Cave of Wonders": "character_images/cave.jpg",
+}
 
 # ── Conversation memory: one separate history list per character ──
 conversation_histories = {}
@@ -81,7 +96,51 @@ for name, data in CHARACTERS.items():
     conversation_histories[name] = [
         {"role": "system", "content": data["prompt"]}
     ]
+########################################################START
+def upload_file(filepath, content_type):
+    with open(filepath, "rb") as f:
+        response = requests.post(
+            "https://tmpfiles.org/api/v1/upload",
+            files={"file": (os.path.basename(filepath), f, content_type)}
+        )
+    result = response.json()
+    url = result["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
+    return url
 
+def generate_talking_video(character_name, audio_path, output_path="reply_video.mp4"):
+    image_path = CHARACTER_IMAGES[character_name]
+
+    print(f"Uploading image and audio for {character_name}...")
+    image_url = upload_file(image_path, "image/jpeg")
+    audio_url = upload_file(audio_path, "audio/wav")
+
+    response = requests.post(
+        "https://api.deepinfra.com/v1/inference/PrunaAI/p-video-avatar",
+        headers={
+            "Authorization": f"Bearer {os.environ['DEEPINFRA_API_KEY']}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "image": image_url,
+            "audio": audio_url,
+            "video_prompt": "A person speaking naturally, subtle head movement.",
+            "resolution": "720p",
+            "disable_safety_filter": True
+        },
+        timeout=180
+    )
+
+    result = response.json()
+    video_url = result.get("video_url")
+    if not video_url:
+        print("No video_url returned:", result)
+        return None
+
+    video_response = requests.get(video_url, timeout=60)
+    with open(output_path, "wb") as f:
+        f.write(video_response.content)
+    return output_path
+##########################################################END
 # ── STT ──
 def transcribe(filepath):
     segments, info = stt_model.transcribe(filepath, beam_size=5)
@@ -129,23 +188,11 @@ VOICE_MAP = {
 
 def speak(text, character_name, filename="reply.wav"):
     voice = VOICE_MAP[character_name]
-    response = requests.post(
-        "https://api.deepinfra.com/v1/inference/hexgrad/Kokoro-82M",
-        headers={
-            "Authorization": f"Bearer {os.environ['DEEPINFRA_API_KEY']}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "text": text,
-            "voice": voice,
-            "speed": 1.0
-        }
-    )
-    result = response.json()
-    audio_b64 = result["audio"].split(",", 1)[1]
-    audio_bytes = base64.b64decode(audio_b64)
-    with open(filename, "wb") as f:
-        f.write(audio_bytes)
+    audio_chunks = []
+    for _, _, audio in kokoro_pipeline(text, voice=voice, speed=1.0):
+        audio_chunks.append(audio)
+    full_audio = np.concatenate(audio_chunks)
+    sf.write(filename, full_audio, 24000)
 
     if character_name == "The Cave of Wonders":
         add_cave_echo(filename)
@@ -155,7 +202,7 @@ def speak(text, character_name, filename="reply.wav"):
 # ── Single character chat ──
 def chat_with_character(character_name, mic_audio):
     if mic_audio is None:
-        return "No audio recorded.", None
+        return "No audio recorded.", None, None
 
     t0 = time.time()
     user_text = transcribe(mic_audio)
@@ -167,13 +214,16 @@ def chat_with_character(character_name, mic_audio):
     audio_path = speak(reply, character_name)
     t3 = time.time()
 
+    video_path = generate_talking_video(character_name, audio_path)
+    t4 = time.time()
+
     print(f"STT (Whisper):  {t1-t0:.2f}s")
     print(f"LLM (Ollama):   {t2-t1:.2f}s")
     print(f"TTS (Kokoro):   {t3-t2:.2f}s")
-    print(f"Total latency:  {t3-t0:.2f}s")
+    print(f"Video gen:      {t4-t3:.2f}s")
+    print(f"Total latency:  {t4-t0:.2f}s")
 
-    return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path
-
+    return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path
 # ── Two characters talking to each other ──
 def characters_talk(char_a, char_b, opening_line, num_turns=6):
     transcript_lines = []
@@ -219,22 +269,39 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
     gr.Markdown("# 🏺 Talking AI Characters")
     gr.Markdown("Pick a character, record your message, and hear them reply.")
 
-    character_dropdown = gr.Dropdown(
-        choices=list(CHARACTERS.keys()),
-        value="Genie",
-        label="Choose your character"
-    )
-    mic_input = gr.Audio(sources=["microphone"], type="filepath", label="Speak here")
-    talk_button = gr.Button("Talk")
-    text_output = gr.Textbox(label="Conversation")
-    audio_output = gr.Audio(label="Character's reply", autoplay=True)
+    with gr.Row():
+        with gr.Column(scale=1):
+            character_video = gr.Video(
+                label="Character",
+                height=350,
+                autoplay=True,
+                loop=True
+            )
+        with gr.Column(scale=2):
+            character_dropdown = gr.Dropdown(
+                choices=list(CHARACTERS.keys()),
+                value="Genie",
+                label="Choose your character"
+            )
+            mic_input = gr.Audio(
+                sources=["microphone"],
+                type="filepath",
+                label="Speak here"
+            )
+            talk_button = gr.Button("🗣️ Talk", variant="primary")
+            text_output = gr.Textbox(label="Conversation", lines=4)
+            audio_output = gr.Audio(
+                label="Character's reply",
+                autoplay=True
+            )
 
     talk_button.click(
         fn=chat_with_character,
         inputs=[character_dropdown, mic_input],
-        outputs=[text_output, audio_output]
+        outputs=[text_output, audio_output, character_video]
     )
 
+    gr.Markdown("---")
     gr.Markdown("## 🎭 Let two characters talk to each other")
     with gr.Row():
         char_a_dropdown = gr.Dropdown(
@@ -251,8 +318,11 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
         label="Opening line / topic",
         value="What do you think of this whole 'wish granting' business?"
     )
-    turns_slider = gr.Slider(minimum=2, maximum=10, step=2, value=6, label="Number of turns")
-    debate_button = gr.Button("Let them talk")
+    turns_slider = gr.Slider(
+        minimum=2, maximum=10, step=2, value=6,
+        label="Number of turns"
+    )
+    debate_button = gr.Button("🎬 Let them talk", variant="primary")
     debate_transcript = gr.Textbox(label="Conversation transcript", lines=10)
     debate_audio = gr.Audio(label="Full conversation", autoplay=True)
 
