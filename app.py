@@ -39,7 +39,6 @@ stt_model = WhisperModel(
 # ── TTS: local Kokoro ──
 kokoro_pipeline = KPipeline(lang_code='a', device="cuda" if torch.cuda.is_available() else "cpu")
 
-# ── CHARACTERS: prompt + fixed Qwen3-TTS voice per character ──
 CHARACTERS = {
     "Genie": {
         "prompt": """You are the Genie of the lamp, straight out of the
