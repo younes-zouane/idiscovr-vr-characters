@@ -83,57 +83,32 @@ CHARACTER_IMAGES = {
     "The Cave of Wonders": "character_images/cave.jpg",
 }
 
+IDLE_LOOPS = {
+    "Genie": "idle_loops/genie_idle_loop.mp4",
+    "Aladdin": "idle_loops/aladdin_idle_loop.mp4",
+    "The Princess": "idle_loops/princess_idle_loop.mp4",
+    "The Sorcerer": "idle_loops/sorcerer_idle_loop.mp4",
+    # Iago and The Cave of Wonders don't have idle loops yet —
+    # they'll just show no video / stay on whatever character_video already shows
+}
+
 # ── Conversation memory: one separate history list per character ──
 conversation_histories = {}
 for name, data in CHARACTERS.items():
     conversation_histories[name] = [
         {"role": "system", "content": data["prompt"]}
     ]
-########################################################START
-def upload_file(filepath, content_type):
-    with open(filepath, "rb") as f:
-        response = requests.post(
-            "https://tmpfiles.org/api/v1/upload",
-            files={"file": (os.path.basename(filepath), f, content_type)}
-        )
-    result = response.json()
-    url = result["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
-    return url
+
+import sys
+sys.path.insert(0, "wav2lip-onnx-256")
+from lipsync_local import LocalLipSync
+
+lip_sync = LocalLipSync(checkpoint_path="wav2lip-onnx-256/checkpoints/wav2lip_256.onnx", device="cuda")
 
 def generate_talking_video(character_name, audio_path, output_path="reply_video.mp4"):
     image_path = CHARACTER_IMAGES[character_name]
+    return lip_sync.generate(image_path, audio_path, output_path)
 
-    print(f"Uploading image and audio for {character_name}...")
-    image_url = upload_file(image_path, "image/jpeg")
-    audio_url = upload_file(audio_path, "audio/wav")
-
-    response = requests.post(
-        "https://api.deepinfra.com/v1/inference/PrunaAI/p-video-avatar",
-        headers={
-            "Authorization": f"Bearer {os.environ['DEEPINFRA_API_KEY']}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "image": image_url,
-            "audio": audio_url,
-            "video_prompt": "A person speaking naturally, subtle head movement.",
-            "resolution": "720p",
-            "disable_safety_filter": True
-        },
-        timeout=180
-    )
-
-    result = response.json()
-    video_url = result.get("video_url")
-    if not video_url:
-        print("No video_url returned:", result)
-        return None
-
-    video_response = requests.get(video_url, timeout=60)
-    with open(output_path, "wb") as f:
-        f.write(video_response.content)
-    return output_path
-##########################################################END
 # ── STT ──
 def transcribe(filepath):
     segments, info = stt_model.transcribe(filepath, beam_size=5)
@@ -268,7 +243,8 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
                 label="Character",
                 height=350,
                 autoplay=True,
-                loop=True
+                loop=True,
+                value=IDLE_LOOPS.get("Genie")
             )
         with gr.Column(scale=2):
             character_dropdown = gr.Dropdown(
@@ -287,6 +263,16 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
                 label="Character's reply",
                 autoplay=True
             )
+
+    # NEW — swap in the idle loop whenever the character changes
+    def on_character_change(character_name):
+        return IDLE_LOOPS.get(character_name)
+
+    character_dropdown.change(
+        fn=on_character_change,
+        inputs=character_dropdown,
+        outputs=character_video
+    )
 
     talk_button.click(
         fn=chat_with_character,
