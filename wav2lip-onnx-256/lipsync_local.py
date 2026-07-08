@@ -28,14 +28,7 @@ class LocalLipSync:
         self.pads = pads
         base_dir = os.path.dirname(os.path.abspath(__file__))
         from gfpgan import GFPGANer
-
-        self.face_enhancer = GFPGANer(
-            model_path='GFPGANv1.4.pth',  # auto-downloads on first run if not present
-            upscale=1,  # we're already resizing to the target crop size; don't double-upscale
-            arch='clean',
-            channel_multiplier=2,
-            device=device
-        )
+        
         # 1) Load the ONNX model ONCE
         session_options = onnxruntime.SessionOptions()
         session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL

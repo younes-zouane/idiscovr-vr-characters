@@ -16,6 +16,8 @@ __pycache__/
 GFPGANv1.4.pth
 gfpgan/
 wav2lip-onnx-256/checkpoints/
+wav2lip-onnx-256/temp/
+voices/
 
 # Generated media (audio/video outputs, not source)
 *.wav
