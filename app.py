@@ -73,6 +73,9 @@ CHARACTERS = {
         short (1-3 sentences), deep and theatrical. Never break character.""",
     },
 }
+
+AUDIO_ONLY_CHARACTERS = {"Iago", "The Cave of Wonders"}
+
 CHARACTER_IMAGES = {
     "Genie":               "character_images/genie.jpg",
     "Aladdin":             "character_images/aladdin.jpg",
@@ -181,7 +184,13 @@ def chat_with_character(character_name, mic_audio):
     audio_path = speak(reply, character_name)
     t3 = time.time()
 
-    video_path = generate_talking_video(character_name, audio_path)
+    video_path = None
+    if character_name not in AUDIO_ONLY_CHARACTERS:
+        try:
+            video_path = generate_talking_video(character_name, audio_path)
+        except Exception as e:
+            print(f"Video generation failed for {character_name}: {e}")
+            video_path = None
     t4 = time.time()
 
     print(f"STT (Whisper):  {t1-t0:.2f}s")
