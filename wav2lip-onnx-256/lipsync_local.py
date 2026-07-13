@@ -27,7 +27,6 @@ class LocalLipSync:
     def __init__(self, checkpoint_path, device="cuda", pads=(0, 10, 0, 0)):
         self.pads = pads
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        from gfpgan import GFPGANer
         
         # 1) Load the ONNX model ONCE
         session_options = onnxruntime.SessionOptions()
@@ -75,9 +74,7 @@ class LocalLipSync:
         y1 = max(0, y2 - side)
         x1 = max(0, x2 - side)
 
-        print("crop box size:", (y2 - y1), "x", (x2 - x1))
         face = cv2.resize(image[y1:y2, x1:x2], (IMG_SIZE, IMG_SIZE))
-        cv2.imwrite("debug_face_crop.jpg", face)
 
         img_masked = face.copy()
         img_masked[IMG_SIZE // 2:, :] = 0

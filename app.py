@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import sysconfig
 from pathlib import Path
@@ -101,7 +102,6 @@ for name, data in CHARACTERS.items():
         {"role": "system", "content": data["prompt"]}
     ]
 
-import sys
 sys.path.insert(0, "wav2lip-onnx-256")
 from lipsync_local import LocalLipSync
 
@@ -203,6 +203,7 @@ def chat_with_character(character_name, mic_audio):
     return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path
 # ── Two characters talking to each other ──
 def characters_talk(char_a, char_b, opening_line, num_turns=6):
+    num_turns = int(num_turns)
     transcript_lines = []
     audio_segments = []
 
