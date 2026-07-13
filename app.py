@@ -117,8 +117,9 @@ def transcribe(filepath):
     return " ".join(segment.text for segment in segments).strip()
 
 # ── LLM ──
-def ask_character(character_name, message):
-    history = conversation_histories[character_name]
+def ask_character(character_name, message, history=None):
+    if history is None:
+        history = conversation_histories[character_name]
     history.append({"role": "user", "content": message})
     response = client.chat.completions.create(
         model=MODEL,
@@ -205,12 +206,18 @@ def characters_talk(char_a, char_b, opening_line, num_turns=6):
     transcript_lines = []
     audio_segments = []
 
+    # Throwaway histories for this debate only — never touch conversation_histories
+    debate_histories = {
+        char_a: [{"role": "system", "content": CHARACTERS[char_a]["prompt"]}],
+        char_b: [{"role": "system", "content": CHARACTERS[char_b]["prompt"]}],
+    }
+
     current_speaker = char_a
     other_speaker = char_b
     last_line = opening_line
 
     for i in range(num_turns):
-        reply = ask_character(current_speaker, last_line)
+        reply = ask_character(current_speaker, last_line, history=debate_histories[current_speaker])
         transcript_lines.append(f"{current_speaker}: {reply}")
 
         turn_audio_path = f"turn_{i}.wav"
