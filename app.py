@@ -1,7 +1,6 @@
 import os
 import time
-import base64
-import requests
+import sysconfig
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -17,7 +16,7 @@ import torch
 load_dotenv()
 
 # ── NVIDIA DLL registration (needed for faster-whisper on Windows) ──
-root = Path(__file__).resolve().parent / "venv" / "Lib" / "site-packages" / "nvidia"
+root = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
 for sub in list(root.glob("*/bin")) + list(root.glob("*/lib")):
     os.add_dll_directory(str(sub.resolve()))
     os.environ["PATH"] = str(sub.resolve()) + os.pathsep + os.environ["PATH"]
