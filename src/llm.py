@@ -18,10 +18,6 @@ def init_conversation_histories():
 def ask_character(character_name, message, history):
     history.append({"role": "user", "content": message})
 
-    # keep the system prompt + only the most recent exchanges
-    if len(history) > MAX_HISTORY_MESSAGES:
-        history[:] = [history[0]] + history[-(MAX_HISTORY_MESSAGES - 1):]
-
     response = client.chat.completions.create(
         model=config.MODEL,
         max_tokens=300,
@@ -29,6 +25,11 @@ def ask_character(character_name, message, history):
     )
     reply = response.choices[0].message.content
     history.append({"role": "assistant", "content": reply})
+
+    # keep the system prompt + only the most recent exchanges
+    if len(history) > MAX_HISTORY_MESSAGES:
+        history[:] = [history[0]] + history[-(MAX_HISTORY_MESSAGES - 1):]
+
     return reply
 
 

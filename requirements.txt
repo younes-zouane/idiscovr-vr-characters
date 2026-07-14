@@ -12,3 +12,5 @@ insightface
 onnxruntime-gpu
 python-dotenv
 # torch is installed separately with the correct CUDA build — see README
+pytest
+pytest-mock
