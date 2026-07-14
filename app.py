@@ -6,23 +6,38 @@ from pydub import AudioSegment
 
 from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS, IDLE_LOOPS
 from src.lipsync import generate_talking_video
-from src.llm import ask_character, prewarm_model
+from src.llm import ask_character, init_conversation_histories, prewarm_model
 from src.stt import transcribe
 from src.tts import speak
 
 
-def chat_with_character(character_name, mic_audio):
+def chat_with_character(character_name, mic_audio, session_histories):
     if mic_audio is None:
-        return "No audio recorded.", None, None
+        return "No audio recorded.", None, None, session_histories
 
     t0 = time.time()
-    user_text = transcribe(mic_audio)
+    try:
+        user_text = transcribe(mic_audio)
+    except Exception as e:
+        print(f"Transcription failed: {e}")
+        return "Sorry, I couldn't understand that audio. Please try recording again.", None, None, session_histories
     t1 = time.time()
 
-    reply = ask_character(character_name, user_text)
+    if not user_text:
+        return "I didn't catch that — could you try speaking again?", None, None, session_histories
+
+    try:
+        reply = ask_character(character_name, user_text, session_histories[character_name])
+    except Exception as e:
+        print(f"LLM call failed for {character_name}: {e}")
+        return f"You said: {user_text}\n\n{character_name} is having trouble responding right now. Please try again in a moment.", None, None, session_histories
     t2 = time.time()
 
-    audio_path = speak(reply, character_name)
+    try:
+        audio_path = speak(reply, character_name)
+    except Exception as e:
+        print(f"TTS failed for {character_name}: {e}")
+        return f"You said: {user_text}\n\n{character_name}: {reply}\n\n(Voice generation failed, showing text only.)", None, None, session_histories
     t3 = time.time()
 
     video_path = None
@@ -40,8 +55,7 @@ def chat_with_character(character_name, mic_audio):
     print(f"Video gen:      {t4-t3:.2f}s")
     print(f"Total latency:  {t4-t0:.2f}s")
 
-    return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path
-
+    return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path, session_histories
 
 def characters_talk(char_a, char_b, opening_line, num_turns=6):
     num_turns = int(num_turns)
@@ -80,6 +94,7 @@ def characters_talk(char_a, char_b, opening_line, num_turns=6):
 
 # ── Gradio UI ──
 with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
+    session_histories = gr.State(value=init_conversation_histories)
     gr.Markdown("# 🏺 Talking AI Characters")
     gr.Markdown("Pick a character, record your message, and hear them reply.")
 
@@ -122,8 +137,8 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
 
     talk_button.click(
         fn=chat_with_character,
-        inputs=[character_dropdown, mic_input],
-        outputs=[text_output, audio_output, character_video]
+        inputs=[character_dropdown, mic_input, session_histories],
+        outputs=[text_output, audio_output, character_video, session_histories]
     )
 
     gr.Markdown("---")

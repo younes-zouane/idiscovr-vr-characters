@@ -1,18 +1,27 @@
 from openai import OpenAI
-
 from . import config
 from .characters import CHARACTERS
 
 client = OpenAI(api_key="ollama", base_url=config.OLLAMA_BASE_URL)
 
-conversation_histories = {}
-for name, data in CHARACTERS.items():
-    conversation_histories[name] = [{"role": "system", "content": data["prompt"]}]
+MAX_HISTORY_MESSAGES = 20  # system prompt + last 10 user/assistant exchanges
 
-def ask_character(character_name, message, history=None):
-    if history is None:
-        history = conversation_histories[character_name]
+
+def init_conversation_histories():
+    """Build a fresh, per-session history dict — one system-prompted list per character."""
+    return {
+        name: [{"role": "system", "content": data["prompt"]}]
+        for name, data in CHARACTERS.items()
+    }
+
+
+def ask_character(character_name, message, history):
     history.append({"role": "user", "content": message})
+
+    # keep the system prompt + only the most recent exchanges
+    if len(history) > MAX_HISTORY_MESSAGES:
+        history[:] = [history[0]] + history[-(MAX_HISTORY_MESSAGES - 1):]
+
     response = client.chat.completions.create(
         model=config.MODEL,
         max_tokens=300,
@@ -21,6 +30,7 @@ def ask_character(character_name, message, history=None):
     reply = response.choices[0].message.content
     history.append({"role": "assistant", "content": reply})
     return reply
+
 
 def prewarm_model():
     print("Pre-warming LLM model...")
