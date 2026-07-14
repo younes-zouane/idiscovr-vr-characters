@@ -1,176 +1,16 @@
 import os
-import sys
 import time
-import sysconfig
-from pathlib import Path
-from dotenv import load_dotenv
-from openai import OpenAI
-from faster_whisper import WhisperModel
-from pydub import AudioSegment
-from pydub.effects import normalize
+
 import gradio as gr
-from kokoro import KPipeline
-import soundfile as sf
-import numpy as np
-import torch
+from pydub import AudioSegment
 
-load_dotenv()
+from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS, IDLE_LOOPS
+from src.lipsync import generate_talking_video
+from src.llm import ask_character, prewarm_model
+from src.stt import transcribe
+from src.tts import speak
 
-# ── NVIDIA DLL registration (needed for faster-whisper on Windows) ──
-root = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
-for sub in list(root.glob("*/bin")) + list(root.glob("*/lib")):
-    os.add_dll_directory(str(sub.resolve()))
-    os.environ["PATH"] = str(sub.resolve()) + os.pathsep + os.environ["PATH"]
 
-# ── LLM: local Ollama ──
-client = OpenAI(
-    api_key="ollama",
-    base_url="http://localhost:11434/v1",
-)
-MODEL = "llama3.1:8b"
-
-# ── STT: local faster-whisper ──
-stt_model = WhisperModel(
-    "medium",
-    device="cuda",
-    compute_type="float16"
-)
-
-# ── TTS: local Kokoro ──
-kokoro_pipeline = KPipeline(lang_code='a', device="cuda" if torch.cuda.is_available() else "cpu")
-
-CHARACTERS = {
-    "Genie": {
-        "prompt": """You are the Genie of the lamp, straight out of the
-        One Thousand and One Nights. Loud, theatrical, a show-off. You
-        grant "wishes" by answering questions with flair and humor.
-        Keep replies short (2-4 sentences). Never break character.""",
-    },
-    "Aladdin": {
-        "prompt": """You are Aladdin, a quick, cheeky, street-smart young
-        man. Friendly and a bit of a charmer. Keep replies short
-        (2-4 sentences). Never break character.""",
-    },
-    "The Princess": {
-        "prompt": """You are a sharp, independent princess who knows a
-        great deal and refuses to be talked down to. Witty and
-        confident. Keep replies short (2-4 sentences). Never break character.""",
-    },
-    "Iago": {
-        "prompt": """You are Iago, a sarcastic parrot who complains about
-        everything. Comic relief, dry wit, never impressed. Keep replies
-        short (1-3 sentences). Never break character.""",
-    },
-    "The Sorcerer": {
-        "prompt": """You are a smooth, slightly menacing sorcerer who
-        answers in riddles. Mysterious and calculating. Keep replies
-        short (2-4 sentences). Never break character.""",
-    },
-    "The Cave of Wonders": {
-        "prompt": """You are the Cave of Wonders, an ancient, booming,
-        magical voice — not a person, but the voice of the cave itself.
-        You speak in dramatic warnings and riddles about who is worthy
-        to enter. Example tone: "WHO DISTURBS MY SLUMBER?" Keep replies
-        short (1-3 sentences), deep and theatrical. Never break character.""",
-    },
-}
-
-AUDIO_ONLY_CHARACTERS = {"Iago", "The Cave of Wonders"}
-
-CHARACTER_IMAGES = {
-    "Genie":               "character_images/genie.jpg",
-    "Aladdin":             "character_images/aladdin.jpg",
-    "The Princess":        "character_images/princess.jpg",
-    "Iago":                "character_images/iago.jpg",
-    "The Sorcerer":        "character_images/sorcerer.jpg",
-    "The Cave of Wonders": "character_images/cave.jpg",
-}
-
-IDLE_LOOPS = {
-    "Genie": "idle_loops/genie_idle_loop.mp4",
-    "Aladdin": "idle_loops/aladdin_idle_loop.mp4",
-    "The Princess": "idle_loops/princess_idle_loop.mp4",
-    "The Sorcerer": "idle_loops/sorcerer_idle_loop.mp4",
-    # Iago and The Cave of Wonders don't have idle loops yet —
-    # they'll just show no video / stay on whatever character_video already shows
-}
-
-# ── Conversation memory: one separate history list per character ──
-conversation_histories = {}
-for name, data in CHARACTERS.items():
-    conversation_histories[name] = [
-        {"role": "system", "content": data["prompt"]}
-    ]
-
-sys.path.insert(0, "wav2lip-onnx-256")
-from lipsync_local import LocalLipSync
-
-lip_sync = LocalLipSync(checkpoint_path="wav2lip-onnx-256/checkpoints/wav2lip_256.onnx", device="cuda")
-
-def generate_talking_video(character_name, audio_path, output_path="reply_video.mp4"):
-    image_path = CHARACTER_IMAGES[character_name]
-    return lip_sync.generate(image_path, audio_path, output_path)
-
-# ── STT ──
-def transcribe(filepath):
-    segments, info = stt_model.transcribe(filepath, beam_size=5)
-    return " ".join(segment.text for segment in segments).strip()
-
-# ── LLM ──
-def ask_character(character_name, message, history=None):
-    if history is None:
-        history = conversation_histories[character_name]
-    history.append({"role": "user", "content": message})
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=300,
-        messages=history
-    )
-    reply = response.choices[0].message.content
-    history.append({"role": "assistant", "content": reply})
-    return reply
-
-# ── Cave of Wonders audio post-processing ──
-def add_cave_echo(filename):
-    sound = AudioSegment.from_wav(filename)
-    echo1 = sound - 8
-    echo2 = sound - 14
-    delay1 = AudioSegment.silent(duration=180) + echo1
-    delay2 = AudioSegment.silent(duration=350) + echo2
-    combined = sound.overlay(delay1).overlay(delay2)
-    combined = normalize(combined)
-    octaves = -0.15
-    new_sample_rate = int(combined.frame_rate * (2 ** octaves))
-    deeper = combined._spawn(combined.raw_data, overrides={"frame_rate": new_sample_rate})
-    deeper = deeper.set_frame_rate(sound.frame_rate)
-    deeper.export(filename, format="wav")
-
-# Voice mapping for Kokoro-82M
-# Available voices: af_heart, af_bella, af_sarah, af_nicole (female)
-#                   am_adam, am_michael, am_echo, am_liam (male)
-VOICE_MAP = {
-    "Genie":              "am_adam",    # deep, authoritative
-    "Aladdin":            "am_michael", # young, casual
-    "The Princess":       "af_sarah",   # clear, confident
-    "Iago":               "am_liam",    # lighter, slightly nasal
-    "The Sorcerer":       "am_echo",    # deeper, resonant
-    "The Cave of Wonders": "am_adam",   # deepest available
-}
-
-def speak(text, character_name, filename="reply.wav"):
-    voice = VOICE_MAP[character_name]
-    audio_chunks = []
-    for _, _, audio in kokoro_pipeline(text, voice=voice, speed=1.0):
-        audio_chunks.append(audio)
-    full_audio = np.concatenate(audio_chunks)
-    sf.write(filename, full_audio, 24000)
-
-    if character_name == "The Cave of Wonders":
-        add_cave_echo(filename)
-
-    return filename
-
-# ── Single character chat ──
 def chat_with_character(character_name, mic_audio):
     if mic_audio is None:
         return "No audio recorded.", None, None
@@ -201,13 +41,13 @@ def chat_with_character(character_name, mic_audio):
     print(f"Total latency:  {t4-t0:.2f}s")
 
     return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path
-# ── Two characters talking to each other ──
+
+
 def characters_talk(char_a, char_b, opening_line, num_turns=6):
     num_turns = int(num_turns)
     transcript_lines = []
     audio_segments = []
 
-    # Throwaway histories for this debate only — never touch conversation_histories
     debate_histories = {
         char_a: [{"role": "system", "content": CHARACTERS[char_a]["prompt"]}],
         char_b: [{"role": "system", "content": CHARACTERS[char_b]["prompt"]}],
@@ -237,16 +77,6 @@ def characters_talk(char_a, char_b, opening_line, num_turns=6):
         os.remove(f"turn_{i}.wav")
 
     return "\n\n".join(transcript_lines), "conversation.wav"
-
-# ── Pre-warm LLM so first real user gets fast response ──
-def prewarm_model():
-    print("Pre-warming LLM model...")
-    client.chat.completions.create(
-        model=MODEL,
-        max_tokens=1,
-        messages=[{"role": "user", "content": "hi"}]
-    )
-    print("Model warm and ready.")
 
 # ── Gradio UI ──
 with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:

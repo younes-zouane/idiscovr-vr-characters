@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [
+    "wav2lip-onnx-256",
+    "FasterLivePortrait-windows",
+    "experiments",
+    "venv311",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
