@@ -97,8 +97,15 @@ On Windows, GPU execution needs CUDA runtime DLLs available to Python. This proj
 pip-installed CUDA packages rather than a system-wide CUDA Toolkit install:
 
 ```powershell
-pip install nvidia-cuda-runtime nvidia-cublas nvidia-cudnn-cu13 nvidia-cufft
+pip install onnxruntime-gpu==1.26.0
+pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cufft-cu12
 ```
+> **Important:** `onnxruntime-gpu` must stay pinned to `1.26.0`. Version 1.27+
+> dropped CUDA 12 support and requires CUDA 13, which conflicts with the CUDA
+> 12.8 torch build above. Don't install a separate `nvidia-cudnn-cu12` package
+> either — cuDNN comes from torch's own bundled copy, shared with onnxruntime
+> via `preload_dlls()` in `wav2lip-onnx-256/lipsync_local.py`. Full story in
+> `KNOWN_ISSUES.md` if you hit DLL loading errors.
 
 `app.py` and `wav2lip-onnx-256/lipsync_local.py` locate these automatically via
 `sysconfig.get_paths()["purelib"]` and register them with the DLL loader at startup — no
@@ -180,16 +187,18 @@ there is slow (~1.5s/frame) but fine for one-time, offline idle-loop generation.
 ## Typical latency (RTX 5060 Ti, 16GB)
 
 ```
-STT (faster-whisper, medium, fp16):   ~0.9s
-LLM (Ollama, llama3.1:8b):            ~2.9s
-TTS (Kokoro-82M):                     ~1.3s
-Video gen (Wav2Lip-256, GPU):         ~5.5s
-Total:                                ~10.6s per turn
+STT (faster-whisper, medium, fp16):   ~0.8s
+LLM (Ollama, llama3.1:8b):            ~3.0s
+TTS (Kokoro-82M):                     ~1.1s
+Video gen (Wav2Lip-256, GPU):         ~7-9s
+Total:                                ~12-14s per turn
 ```
 
 Video generation is the largest single cost. The underlying ONNX export has a hardcoded
 batch size of 1, so batching multiple frames per inference call isn't possible without
-re-exporting the model — per-frame inference is the current ceiling.
+re-exporting the model — per-frame inference is the current ceiling. See `OPTIMIZATION.md`
+for the optimization work (single-pass video encoding, streaming UI responses, and the
+onnxruntime-gpu/torch GPU fix) that got the pipeline to these numbers.
 
 ## Troubleshooting / Environment Gotchas (local pipeline)
 
@@ -218,34 +227,37 @@ python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_
 
 Expect `True` and `(12, 0)`.
 
-**Don't preload cuDNN via `onnxruntime.preload_dlls()` in the same process as torch.**
-`lipsync_local.py` needs `onnxruntime-gpu` to find its CUDA runtime DLLs (via pip-installed
-`nvidia-cuda-runtime` / `nvidia-cublas` / `nvidia-cufft` packages, not a system CUDA Toolkit
-install). But do **not** also preload cuDNN this way — torch already loads its own bundled
-cuDNN 9 DLLs at import time, and forcing a second cuDNN load from the pip package's directory
-causes both libraries to silently fail (`WinError 127`), breaking Kokoro's TTS with
-`RuntimeError: GET was unable to find an engine to execute this computation`. Only preload
-the plain CUDA runtime, not cuDNN:
+**cuDNN must come from exactly one place: torch's own bundled copy.**
+Two different cuDNN 9.x builds installed side-by-side (torch's bundled copy vs. a separately
+pip-installed `nvidia-cudnn-cu12` package) are *not* binary-compatible with each other, even
+though both report "cuDNN 9" — different file sizes, different internal symbols. Having both
+on the DLL search path crashes torch's own import with `OSError: [WinError 127] ... Error
+loading "torch\lib\cudnn_cnn64_9.dll"`. Fix: don't install `nvidia-cudnn-cu12` at all. Point
+onnxruntime's cuDNN loading directly at torch's own `torch/lib` folder instead:
 
 ```python
 onnxruntime.preload_dlls(cuda=True, cudnn=False, directory=_cuda_dir)
-# do NOT also call preload_dlls(cudnn=True, ...) — let torch own cuDNN
+onnxruntime.preload_dlls(cuda=False, cudnn=True, directory=_torch_lib_dir)  # torch's own copy
 ```
 
-**onnxruntime and onnxruntime-gpu can't coexist.**
-They share the same import name (`onnxruntime`), so whichever gets installed *last* wins,
-regardless of what `pip show` says about the other. If GPU execution providers
-(`CUDAExecutionProvider`) go missing after any pip install/uninstall churn, check:
+See `wav2lip-onnx-256/lipsync_local.py` for the full implementation, and `KNOWN_ISSUES.md`
+for the complete debugging story.
+
+**`onnxruntime-gpu` must stay pinned to `1.26.0`, not the latest version.**
+Version 1.27+ dropped CUDA 12 support entirely and requires CUDA 13, which doesn't match this
+project's CUDA 12.8 torch build. `onnxruntime` (CPU) and `onnxruntime-gpu` also share the same
+import name, so whichever installs *last* wins, regardless of what `pip show` says about the
+other. If GPU execution providers go missing after any pip churn, check:
 
 ```powershell
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
 
-If it only shows `CPUExecutionProvider`, do a clean reinstall:
+If it only shows `CPUExecutionProvider`, or complains about CUDA 13, do a clean reinstall:
 
 ```powershell
 pip uninstall onnxruntime onnxruntime-gpu -y
-pip install onnxruntime-gpu
+pip install onnxruntime-gpu==1.26.0
 ```
 
 **If Ollama connection errors show up (`Connection refused` / `APIConnectionError`):**
