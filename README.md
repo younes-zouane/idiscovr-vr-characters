@@ -15,6 +15,23 @@ Built as part of an internship assignment for iDISCOVR.
 - **The Sorcerer** — smooth, menacing, speaks in riddles
 - **The Cave of Wonders** — booming voice of the room itself (not a person)
 
+## Project structure
+app.py                          # Entry point: Gradio UI, orchestrates the pipeline
+src/
+config.py                     # Env loading, CUDA/DLL setup, constants
+characters.py                 # Character prompts, images, voices, idle loops
+stt.py                        # faster-whisper wrapper
+llm.py                        # Ollama client, conversation history, capping
+tts.py                        # Kokoro wrapper
+lipsync.py                    # Wav2Lip wrapper
+audio_effects.py               # Cave of Wonders echo effect
+tests/                          # pytest suite (15 tests), mocked ML deps
+wav2lip-onnx-256/                # Vendored Wav2Lip ONNX inference code (see NOTICE.md)
+
+Split into a `src/` package so each concern — speech-to-text, the LLM,
+text-to-speech, lip sync — is independently testable and readable, rather
+than one large `app.py`.
+
 ## How it works (current: fully local pipeline)
 
 1. You speak into your microphone.
@@ -148,7 +165,11 @@ strong contrast in both writing style and voice.
 
 ## Notes
 
-- Each character keeps memory within a session (remembers what you told them earlier).
+- Each character keeps memory **per browser session** (via Gradio's `gr.State`) —
+  two people using the app at the same time, or the same person in two tabs,
+  get fully separate conversation histories. Conversation history is also
+  automatically capped (oldest messages trimmed, system prompt always kept)
+  so long conversations don't grow the LLM context unboundedly.
 - Speech auto-detects language — speak French, get a French reply.
 - The Cave of Wonders gets a post-processing echo/pitch effect for extra atmosphere.
 - Model weights (`.onnx`, `.pth`) and the Ollama model are **not committed to this repo** —
@@ -183,6 +204,36 @@ there is slow (~1.5s/frame) but fine for one-time, offline idle-loop generation.
   stylized art (Laplacian-variance sharpness dropped from ~93 to ~83), because it imposes a
   photorealistic-face prior that fights illustrated styles. Not worth it unless character art
   becomes more photorealistic.
+
+## Testing
+
+```powershell
+pip install pytest pytest-mock
+python -m pytest tests/ -v
+```
+
+15 tests covering character data integrity, LLM conversation history and
+capping, STT/TTS wrapper behavior, and real (unmocked) audio processing for
+the Cave of Wonders echo effect. Heavy ML dependencies (faster-whisper,
+Kokoro, the Wav2Lip ONNX session) are mocked via `tests/conftest.py` so the
+suite runs in under 2 seconds with no GPU required — safe to run in CI or on
+a machine without the model weights downloaded.
+
+## Docker
+
+A `docker-compose.yml` sets up two containerized services: `ollama` (the
+LLM) and `app` (everything else). GPU passthrough is confirmed working.
+
+```powershell
+docker compose build
+docker compose up -d
+docker exec idiscovr-ollama ollama pull llama3.1:8b
+```
+
+**Current status:** the `app` container currently hangs during startup
+(somewhere in Kokoro/spaCy model loading) — see `KNOWN_ISSUES.md` for the
+full investigation and next steps. The `ollama` service works standalone.
+Native (non-Docker) setup per the steps above is the reliable path for now.
 
 ## Typical latency (RTX 5060 Ti, 16GB)
 
@@ -285,3 +336,12 @@ silently swap out a working CUDA-enabled torch install for a CPU-only one.
 - Moving everything local removes all per-call API cost and lets the whole thing run fully
   offline — worth the setup pain for a demo environment that can't rely on a stable internet
   connection.
+
+## License
+
+This project depends on two components with non-commercial, research-only
+license restrictions: **Wav2Lip** and **insightface's pre-trained models**.
+Because of this, the pipeline as a whole cannot be used commercially without
+separately licensing both from their original authors. Full details,
+including direct quotes from both projects' licensing terms, are in
+[`NOTICE.md`](./NOTICE.md).
