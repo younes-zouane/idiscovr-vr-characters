@@ -1,4 +1,5 @@
 from openai import OpenAI
+
 from . import config
 from .characters import CHARACTERS
 

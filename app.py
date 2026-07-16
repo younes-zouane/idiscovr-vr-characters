@@ -13,32 +13,49 @@ from src.tts import speak
 
 def chat_with_character(character_name, mic_audio, session_histories):
     if mic_audio is None:
-        return "No audio recorded.", None, None, session_histories
+        yield "No audio recorded.", None, None, session_histories
+        return
 
     t0 = time.time()
     try:
         user_text = transcribe(mic_audio)
     except Exception as e:
         print(f"Transcription failed: {e}")
-        return "Sorry, I couldn't understand that audio. Please try recording again.", None, None, session_histories
+        yield "Sorry, I couldn't understand that audio. Please try recording again.", None, None, session_histories
+        return
     t1 = time.time()
 
     if not user_text:
-        return "I didn't catch that — could you try speaking again?", None, None, session_histories
+        yield "I didn't catch that — could you try speaking again?", None, None, session_histories
+        return
 
     try:
         reply = ask_character(character_name, user_text, session_histories[character_name])
     except Exception as e:
         print(f"LLM call failed for {character_name}: {e}")
-        return f"You said: {user_text}\n\n{character_name} is having trouble responding right now. Please try again in a moment.", None, None, session_histories
+        yield (
+            f"You said: {user_text}\n\n{character_name} is having trouble responding right now. "
+            "Please try again in a moment."
+        ), None, None, session_histories
+        return
     t2 = time.time()
+
+    # Show the text reply immediately — don't make the user wait for TTS/video too
+    yield f"You said: {user_text}\n\n{character_name}: {reply}", None, None, session_histories
 
     try:
         audio_path = speak(reply, character_name)
     except Exception as e:
         print(f"TTS failed for {character_name}: {e}")
-        return f"You said: {user_text}\n\n{character_name}: {reply}\n\n(Voice generation failed, showing text only.)", None, None, session_histories
+        yield (
+            f"You said: {user_text}\n\n{character_name}: {reply}\n\n"
+            "(Voice generation failed, showing text only.)"
+        ), None, None, session_histories
+        return
     t3 = time.time()
+
+    # Show audio as soon as it's ready — don't make the user wait for video too
+    yield f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, None, session_histories
 
     video_path = None
     if character_name not in AUDIO_ONLY_CHARACTERS:
@@ -55,7 +72,7 @@ def chat_with_character(character_name, mic_audio, session_histories):
     print(f"Video gen:      {t4-t3:.2f}s")
     print(f"Total latency:  {t4-t0:.2f}s")
 
-    return f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path, session_histories
+    yield f"You said: {user_text}\n\n{character_name}: {reply}", audio_path, video_path, session_histories
 
 def characters_talk(char_a, char_b, opening_line, num_turns=6):
     num_turns = int(num_turns)

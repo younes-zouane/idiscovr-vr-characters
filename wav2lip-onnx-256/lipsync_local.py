@@ -108,8 +108,6 @@ class LocalLipSync:
             i += 1
 
         frame_h, frame_w = full_frame.shape[:2]
-        temp_avi = output_path.replace(".mp4", "_temp.avi")
-        out = cv2.VideoWriter(temp_avi, cv2.VideoWriter_fourcc(*"DIVX"), fps, (frame_w, frame_h))
 
         # --- build a feathered blend mask ONCE (same size as the crop) ---
         patch_h, patch_w = y2 - y1, x2 - x1
@@ -118,6 +116,21 @@ class LocalLipSync:
         mask = cv2.rectangle(mask, (0, 0), (patch_w - 1, patch_h - 1), 0, feather * 2)
         mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather)
         mask_3ch = mask[:, :, np.newaxis]
+
+        # --- single-pass encode: stream raw frames straight into ffmpeg's stdin,
+        #     muxing audio in the same process, no intermediate .avi file ---
+        ffmpeg_proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-pix_fmt", "bgr24", "-s", f"{frame_w}x{frame_h}", "-r", str(fps),
+                "-i", "-",
+                "-i", audio_path,
+                "-pix_fmt", "yuv420p", "-strict", "-2", "-q:v", "1", "-shortest",
+                output_path,
+            ],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
         for m in mel_chunks:
             mel_batch = m.reshape(1, m.shape[0], m.shape[1], 1).transpose(0, 3, 1, 2).astype(np.float32)
@@ -132,13 +145,11 @@ class LocalLipSync:
             blended = pred_f * mask_3ch + original_patch * (1 - mask_3ch)
             frame[y1:y2, x1:x2] = blended.astype(np.uint8)
 
-            out.write(frame)
+            ffmpeg_proc.stdin.write(frame.tobytes())
 
-        out.release()
+        ffmpeg_proc.stdin.close()
+        ffmpeg_proc.wait()
+        if ffmpeg_proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg exited with code {ffmpeg_proc.returncode}")
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", audio_path, "-i", temp_avi, "-strict", "-2", "-q:v", "1", output_path],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        os.remove(temp_avi)
         return output_path
