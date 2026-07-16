@@ -70,34 +70,48 @@ the LLM responds (~4s in), audio starts playing as soon as TTS finishes
 blocking everything else. Gradio natively supports generator functions for
 `.click()` callbacks — no changes needed to the UI wiring itself.
 
-**Measured results:** total compute time is unchanged (~38s, as expected —
-this optimization doesn't make any stage faster). What changes is *perceived*
-latency: the user sees a response in ~4 seconds instead of ~38. Verified
-visually in the Gradio UI — text, then audio, then video, arriving in
-separate stages rather than all at once at the end.
+**Measured results:** total compute time is unchanged (~38s at the time this
+was measured, before the GPU fix below — as expected, since this optimization
+doesn't make any stage faster). What changes is *perceived* latency: the user
+sees a response in ~4 seconds instead of ~38. Verified visually in the Gradio
+UI — text, then audio, then video, arriving in separate stages rather than
+all at once at the end.
 
 **Honest assessment:** this is a pure UX win with no downside and no real
 engineering complexity — Gradio's generator support made it nearly free to
-implement. For an app where the total pipeline can take 30-40+ seconds
-(especially on CPU-fallback lip sync), this arguably matters more to how the
-app *feels* than optimization 1's ~4% raw speedup.
+implement. It matters even more now that video gen is fast again (see the
+GPU fix below) — a ~4s wait for text feels responsive either way, but it
+mattered a lot more back when total latency was ~38s.
+
+## Update: the GPU fix (found while writing this document)
+
+While finishing Phase 7 docs, the onnxruntime-gpu/torch cuDNN conflict
+described throughout this document and in `KNOWN_ISSUES.md` was actually
+fixed — not just documented. Full details in `KNOWN_ISSUES.md`; summary:
+pinning `onnxruntime-gpu==1.26.0` (matching torch's CUDA 12 build) and
+pointing its cuDNN loading at torch's own bundled copy instead of installing
+a conflicting second one restored GPU-accelerated video generation.
+
+**Real before/after, with the GPU fix included:**
+
+| | Video gen | Total latency |
+|---|---|---|
+| Baseline (CPU fallback) | 35.05s | 39.68s |
+| + Single-pass encoding (still CPU) | 33.54s | 38.47s |
+| + Streaming UI (still CPU) | 33.54s | 38.47s (perceived: ~4s) |
+| **+ GPU fix** | **~7-9s** | **~12-14s** |
 
 ## Summary
 
-| | Video gen | Total latency | Perceived latency (first feedback) |
-|---|---|---|---|
-| Baseline | 35.05s | 39.68s | ~39.68s (nothing shown until the end) |
-| + Single-pass encoding | 33.54s | 38.47s | ~38.47s |
-| + Streaming UI | 33.54s | 38.47s | **~4s** (text), ~5s (audio) |
+Three changes, three different kinds of win:
+- **Single-pass encoding** — small, real reduction in compute time (~4%)
+- **Streaming UI** — large improvement in perceived responsiveness, zero
+  change in actual compute time
+- **GPU fix** — by far the biggest win, ~75-80% reduction in video gen time,
+  found and fixed during Phase 7 after being correctly identified back in
+  Phase 6 as "the real lever" but left as a known issue at the time
 
-Two different kinds of optimization here: single-pass encoding is a small,
-real reduction in actual compute time (~4%); streaming is a large improvement
-in how fast the app *feels*, without changing the underlying compute at all.
-Both are kept — they're complementary, not alternatives.
-
-The biggest remaining lever by far is fixing GPU acceleration for the lip
-sync ONNX session (currently CPU fallback due to the onnxruntime-gpu/torch
-CUDA conflict — see `KNOWN_ISSUES.md`). That single fix would cut video gen
-from ~33s to an estimated 5-9s based on earlier same-day measurements when
-GPU was briefly working, a ~75-85% reduction — far larger than anything in
-this phase. Recommended as the top priority for a future optimization pass.
+This turned out well: Phase 6's honest assessment — that single-pass encoding
+and streaming were real but secondary next to the GPU problem — held up, and
+that GPU problem got properly fixed rather than staying a documented
+limitation. All three changes are complementary and are all kept.

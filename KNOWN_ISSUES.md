@@ -1,8 +1,70 @@
 # Known Issues
 
+## onnxruntime-gpu vs torch cuDNN conflict — RESOLVED
+
+**Status (native Windows venv):** ✅ Resolved. Video generation confirmed
+running on GPU again: 6.9-8.8s (down from 24-48s on CPU fallback), matching
+the originally intended ~5.5s figure in the README.
+
+**Root cause (fully understood now):** two separate but related conflicts,
+solved in sequence:
+
+1. **onnxruntime-gpu version mismatch.** `onnxruntime-gpu==1.27.0` dropped
+   CUDA 12 support entirely and defaults to CUDA 13 (confirmed via the
+   official changelog: *"Support for CUDA 12 will be removed in 1.27.0"*).
+   Your torch build is `2.11.0+cu128` (CUDA 12.8) — a hard version mismatch,
+   not a DLL-path problem. **Fix:** pinned to `onnxruntime-gpu==1.26.0`, the
+   last version defaulting to CUDA 12, matching torch.
+
+2. **cuDNN build mismatch, even after (1).** Once both packages wanted
+   "CUDA 12 + cuDNN 9," two *different* cuDNN 9.x builds were still present
+   in the environment — torch's own bundled copy (`torch/lib/cudnn_cnn64_9.dll`,
+   2,984,560 bytes) and a separately pip-installed `nvidia-cudnn-cu12`
+   package's copy (`nvidia/cudnn/bin/cudnn_cnn64_9.dll`, 2,994,288 bytes).
+   Same filename, same major version, different builds — not binary
+   compatible with each other. Loading both crashed torch's own import with
+   `OSError: [WinError 127] ... Error loading "torch\lib\cudnn_cnn64_9.dll"`.
+   **Fix:** don't install a second cuDNN at all. Point onnxruntime's
+   `preload_dlls(cudnn=True, directory=...)` directly at torch's own
+   `torch/lib` folder instead, so only one cuDNN 9 build (torch's, already
+   proven working) is ever resident in the process. See
+   `wav2lip-onnx-256/lipsync_local.py`.
+
+**Final working setup:**
+- `torch==2.11.0+cu128`, unchanged
+- `onnxruntime-gpu==1.26.0` (pinned, not the default `1.27.0`)
+- `nvidia-cuda-runtime-cu12`, `nvidia-cublas-cu12`, `nvidia-cufft-cu12`
+  installed for onnxruntime's CUDA (not cuDNN) DLLs
+- No separate `nvidia-cudnn-cu12` package — cuDNN comes from torch's own
+  bundled copy, shared via `onnxruntime.preload_dlls(cudnn=True, directory=<torch's lib dir>)`
+- `src/config.py`'s DLL-directory registration loop skips both `cu13` (stale,
+  uninstalled) and `cudnn` (handled explicitly, not via the generic loop)
+
+**Docker status:** the Docker environment (see below) was already
+GPU-accelerated via a different, equally valid approach — a CUDA 13.2 base
+image with everything (torch, onnxruntime-gpu) aligned to CUDA 13 instead of
+12. Both fixes are legitimate; they just align on different CUDA major
+versions depending on the environment's constraints.
+
+---
+
+## Docker: onnxruntime-gpu vs torch CUDA alignment — RESOLVED
+
+**Status:** ✅ Resolved. Building the container on a
+`nvidia/cuda:13.2.1-cudnn-runtime-ubuntu22.04` base image (matching both the
+driver's max supported CUDA version and onnxruntime-gpu's real CUDA 13
+requirement) gives a clean environment with no conflicting cuDNN/onnxruntime
+installs. Verified: `onnxruntime.get_available_providers()` returns
+`['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`
+inside the container. See `Dockerfile` for the exact fix (forcing
+`onnxruntime-gpu` to win over the CPU `onnxruntime` pulled in transitively by
+`faster-whisper`, via an explicit uninstall+reinstall step).
+
+---
+
 ## Docker app container hangs during startup (Kokoro/spaCy model loading)
 
-**Status:** Open, actively being debugged (Phase 5).
+**Status:** Open, not yet debugged further since first discovered.
 
 **Symptom:** `docker compose up -d app` starts the container, but it hangs
 indefinitely somewhere in the `from kokoro import KPipeline` import chain —
@@ -27,16 +89,11 @@ at all, even on a restart where the model should already be cached.
   as the root cause since `py-spy` (attempted for a real stack trace) was
   blocked by Docker's default ptrace security restrictions.
 
-**What works fine, confirmed today:**
+**What works fine, confirmed:**
 - Docker Desktop itself (was fully broken — `hypervisorlaunchtype` was set to
   `Off` at the Windows boot level; fixed via `bcdedit /set hypervisorlaunchtype auto` + reboot).
 - GPU passthrough (`--gpus all`) — confirmed working via `nvidia-smi` in a
   test container.
-- The `onnxruntime-gpu` vs `torch` CUDA conflict that's still an open,
-  documented workaround **natively** is fully resolved inside this container
-  (see the other entry in this file) — `nvidia/cuda:13.2.1-cudnn-runtime-ubuntu22.04`
-  as the base image, matching both the driver's max supported CUDA version and
-  onnxruntime-gpu's real CUDA 13 requirement, was the fix.
 - `ollama` service runs standalone with no issues; `llama3.1:8b` pulled and
   working.
 
@@ -53,73 +110,3 @@ at all, even on a restart where the model should already be cached.
    adding `--cap-add=SYS_PTRACE` to the compose service definition, to get
    an actual Python stack trace of the hang instead of inferring from
    network state.
-
-
-
-**Status (native Windows venv):** Open — workaround in place (see below), real fix
-deferred to Phase 6 (GPU optimization).
-
-**Status (Docker, Phase 5):** ✅ Resolved. Building the container on a
-`nvidia/cuda:13.2.1-cudnn-runtime-ubuntu22.04` base image (matching both the
-driver's max supported CUDA version and onnxruntime-gpu's real CUDA 13
-requirement) gives a clean environment with no conflicting cuDNN/onnxruntime
-installs. Verified: `onnxruntime.get_available_providers()` returns
-`['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']`
-inside the container, vs. CPU-only fallback natively. See `Dockerfile` for the
-exact fix (forcing `onnxruntime-gpu` to win over the CPU `onnxruntime` pulled
-in transitively by `faster-whisper`, via an explicit uninstall+reinstall step).
-This is a strong argument for running the app via Docker going forward rather
-than the native venv, once Phase 5 is fully wired up.
-
-**Symptom:** `onnxruntime.InferenceSession` for the Wav2Lip model falls back to
-`CPUExecutionProvider` instead of `CUDAExecutionProvider`. Lip sync video generation
-still works, but is significantly slower than it should be on the RTX 5060 Ti.
-
-**Root cause:**
-- `torch==2.11.0+cu128` bundles its own cuDNN 9 DLLs, built against CUDA 12.x.
-- `onnxruntime-gpu==1.27.0` requires cuDNN 9.x built against **CUDA 13.x**
-  (installed via the separate `nvidia-cudnn-cu13` pip package).
-- Both packages ship DLLs with identical filenames (e.g. `cudnn_cnn64_9.dll`,
-  `cudnn64_9.dll`). When both are discoverable on the Windows DLL search path,
-  whichever loads first "wins" for the whole process — and the two are not
-  binary-compatible with each other's callers.
-- If `nvidia-cudnn-cu13` is installed and its `bin` folder is added to the DLL
-  search path (see `src/config.py`), **torch crashes on import** with:
-  ```
-  OSError: [WinError 127] The specified procedure could not be found. Error loading
-  "...\torch\lib\cudnn_cnn64_9.dll" or one of its dependencies.
-  ```
-- If `nvidia-cudnn-cu13` is uninstalled (current workaround), torch imports fine,
-  but onnxruntime-gpu can no longer find a compatible cuDNN 13 and silently falls
-  back to CPU for the CUDA execution provider.
-
-**Current workaround (in `src/config.py`):**
-```python
-for sub in list(_root.glob("*/bin")) + list(_root.glob("*/lib")):
-    if "cudnn" in sub.parts:
-        continue  # avoid conflict between torch's bundled cuDNN (cu12) and
-                  # onnxruntime-gpu's expected cuDNN (cu13)
-    os.add_dll_directory(str(sub.resolve()))
-    os.environ["PATH"] = str(sub.resolve()) + os.pathsep + os.environ["PATH"]
-```
-Combined with **not** having `nvidia-cudnn-cu13` installed in the venv. This keeps
-the app crash-free but loses GPU acceleration for lip sync specifically (STT, LLM,
-and TTS are unaffected — they don't go through onnxruntime's CUDA provider).
-
-**Real fix options (pick one in Phase 6):**
-1. Downgrade `onnxruntime-gpu` to a version built against CUDA 12.x, matching
-   the current torch build. Need to check onnxruntime's release notes for the
-   last CUDA-12-compatible 1.x version.
-2. Upgrade torch to a CUDA 13.x build, if/when one exists that still supports
-   the RTX 5060 Ti (Blackwell, sm_120). Would also require re-verifying every
-   other GPU-dependent piece of the pipeline (FasterLivePortrait, Kokoro TTS).
-3. Investigate whether onnxruntime-gpu's `preload_dlls()` (already used
-   elsewhere in `wav2lip-onnx-256/lipsync_local.py` for the CUDA libs) can be
-   pointed at an isolated, non-PATH-polluting cuDNN 13 install so it never
-   collides with torch's bundled one.
-
-**How this was discovered:** During Phase 1/2 fresh-clone testing, a `pip install
-onnxruntime-gpu --force-reinstall` pulled in `nvidia-cudnn-cu13` as a transitive
-dependency, which hadn't been present before and triggered the crash described
-above. Uninstalling it and adding the `config.py` exclusion restored a working
-(CPU-fallback) state.

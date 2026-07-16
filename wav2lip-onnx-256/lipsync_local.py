@@ -7,13 +7,22 @@ import sysconfig
 
 import onnxruntime
 
-_site_packages = sysconfig.get_paths()["purelib"]
-_cuda_dir = os.path.join(_site_packages, "nvidia", "cu13", "bin", "x86_64")
-_cudnn_dir = os.path.join(_site_packages, "nvidia", "cudnn", "bin")
+import torch  # imported here (not moved to top) so its cuDNN loads into the
+               # process before onnxruntime looks for one, and so we can
+               # point onnxruntime at torch's exact copy below
 
+_site_packages = sysconfig.get_paths()["purelib"]
+_cuda_dir = os.path.join(_site_packages, "nvidia", "cuda_runtime", "bin")
 if os.path.isdir(_cuda_dir):
     onnxruntime.preload_dlls(cuda=True, cudnn=False, directory=_cuda_dir)
-# cudnn preload removed — let torch's own bundled cuDNN be the only one in the process
+
+# Point onnxruntime's cuDNN loading at torch's own bundled copy, so there's
+# only ever one cuDNN 9 build resident in the process (torch's) instead of a
+# second, slightly different build from the nvidia-cudnn-cu12 pip package
+# fighting it — confirmed different file sizes despite both being "cuDNN 9.x".
+_torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(_torch_lib_dir):
+    onnxruntime.preload_dlls(cuda=False, cudnn=True, directory=_torch_lib_dir)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import audio  # the repo's own audio.py

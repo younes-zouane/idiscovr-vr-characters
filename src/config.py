@@ -21,8 +21,8 @@ load_dotenv()
 if os.name == "nt":
     _root = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
     for sub in list(_root.glob("*/bin")) + list(_root.glob("*/lib")):
-        if "cudnn" in sub.parts:
-            continue  # avoid conflict between torch's bundled cuDNN (cu12) and onnxruntime-gpu's expected cuDNN (cu13)
+        if "cu13" in sub.parts or "cudnn" in sub.parts:
+            continue  # cu13 is stale; cudnn is handled explicitly via torch's own copy in lipsync_local.py
         os.add_dll_directory(str(sub.resolve()))
         os.environ["PATH"] = str(sub.resolve()) + os.pathsep + os.environ["PATH"]
 # ── LLM: local Ollama ──
