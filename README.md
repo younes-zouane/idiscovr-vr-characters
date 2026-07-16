@@ -16,6 +16,7 @@ Built as part of an internship assignment for iDISCOVR.
 - **The Cave of Wonders** — booming voice of the room itself (not a person)
 
 ## Project structure
+
 app.py                          # Entry point: Gradio UI, orchestrates the pipeline
 src/
 config.py                     # Env loading, CUDA/DLL setup, constants
