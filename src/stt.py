@@ -8,6 +8,7 @@ stt_model = WhisperModel(
     compute_type=config.WHISPER_COMPUTE_TYPE,
 )
 
+
 def transcribe(filepath):
     segments, info = stt_model.transcribe(filepath, beam_size=5)
     return " ".join(segment.text for segment in segments).strip()

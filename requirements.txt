@@ -9,7 +9,7 @@ opencv-python
 librosa
 scipy
 insightface
-onnxruntime-gpu
+onnxruntime-gpu==1.26.0
 python-dotenv
 # torch is installed separately with the correct CUDA build — see README
 pytest

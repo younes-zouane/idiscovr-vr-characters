@@ -30,7 +30,7 @@ RUN python -m pip install --no-cache-dir torch --index-url https://download.pyto
 #    which conflicts with onnxruntime-gpu (see KNOWN_ISSUES.md). Force the
 #    GPU version to win by reinstalling it last. ──
 RUN python -m pip uninstall -y onnxruntime && \
-    python -m pip install --no-cache-dir --force-reinstall onnxruntime-gpu
+    python -m pip install --no-cache-dir --force-reinstall onnxruntime-gpu==1.27.0
 
 # ── Application code ──
 COPY app.py .

@@ -4,9 +4,11 @@ from src.tts import speak
 
 
 def test_speak_uses_correct_voice_for_character():
-    with patch("src.tts.kokoro_pipeline") as mock_pipeline, \
-         patch("src.tts.sf.write"), \
-         patch("src.tts.add_cave_echo") as mock_echo:
+    with (
+        patch("src.tts.kokoro_pipeline") as mock_pipeline,
+        patch("src.tts.sf.write"),
+        patch("src.tts.add_cave_echo") as mock_echo,
+    ):
         mock_pipeline.return_value = [(None, None, MagicMock())]
         speak("hello", "Genie", filename="test.wav")
 
@@ -16,9 +18,11 @@ def test_speak_uses_correct_voice_for_character():
 
 
 def test_speak_applies_cave_echo_only_for_cave_of_wonders():
-    with patch("src.tts.kokoro_pipeline") as mock_pipeline, \
-         patch("src.tts.sf.write"), \
-         patch("src.tts.add_cave_echo") as mock_echo:
+    with (
+        patch("src.tts.kokoro_pipeline") as mock_pipeline,
+        patch("src.tts.sf.write"),
+        patch("src.tts.add_cave_echo") as mock_echo,
+    ):
         mock_pipeline.return_value = [(None, None, MagicMock())]
         speak("hello", "The Cave of Wonders", filename="test.wav")
 

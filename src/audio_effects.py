@@ -11,7 +11,7 @@ def add_cave_echo(filename):
     combined = sound.overlay(delay1).overlay(delay2)
     combined = normalize(combined)
     octaves = -0.15
-    new_sample_rate = int(combined.frame_rate * (2 ** octaves))
+    new_sample_rate = int(combined.frame_rate * (2**octaves))
     deeper = combined._spawn(combined.raw_data, overrides={"frame_rate": new_sample_rate})
     deeper = deeper.set_frame_rate(sound.frame_rate)
     deeper.export(filename, format="wav")

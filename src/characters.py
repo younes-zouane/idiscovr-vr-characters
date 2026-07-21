@@ -37,11 +37,11 @@ CHARACTERS = {
 AUDIO_ONLY_CHARACTERS = {"Iago", "The Cave of Wonders"}
 
 CHARACTER_IMAGES = {
-    "Genie":               "character_images/genie.jpg",
-    "Aladdin":             "character_images/aladdin.jpg",
-    "The Princess":        "character_images/princess.jpg",
-    "Iago":                "character_images/iago.jpg",
-    "The Sorcerer":        "character_images/sorcerer.jpg",
+    "Genie": "character_images/genie.jpg",
+    "Aladdin": "character_images/aladdin.jpg",
+    "The Princess": "character_images/princess.jpg",
+    "Iago": "character_images/iago.jpg",
+    "The Sorcerer": "character_images/sorcerer.jpg",
     "The Cave of Wonders": "character_images/cave.jpg",
 }
 
@@ -58,10 +58,10 @@ IDLE_LOOPS = {
 # Available voices: af_heart, af_bella, af_sarah, af_nicole (female)
 #                   am_adam, am_michael, am_echo, am_liam (male)
 VOICE_MAP = {
-    "Genie":              "am_adam",    # deep, authoritative
-    "Aladdin":            "am_michael", # young, casual
-    "The Princess":       "af_sarah",   # clear, confident
-    "Iago":               "am_liam",    # lighter, slightly nasal
-    "The Sorcerer":       "am_echo",    # deeper, resonant
-    "The Cave of Wonders": "am_adam",   # deepest available
+    "Genie": "am_adam",  # deep, authoritative
+    "Aladdin": "am_michael",  # young, casual
+    "The Princess": "af_sarah",  # clear, confident
+    "Iago": "am_liam",  # lighter, slightly nasal
+    "The Sorcerer": "am_echo",  # deeper, resonant
+    "The Cave of Wonders": "am_adam",  # deepest available
 }

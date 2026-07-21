@@ -14,6 +14,7 @@ def _fake_openai_response(text="a reply"):
 def test_init_conversation_histories_has_one_entry_per_character():
     histories = init_conversation_histories()
     from src.characters import CHARACTERS
+
     assert set(histories.keys()) == set(CHARACTERS.keys())
 
 
