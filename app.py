@@ -177,4 +177,4 @@ with gr.Blocks(title="Talking AI Characters - VR Demo") as demo:
 
 if __name__ == "__main__":
     prewarm_model()
-    demo.launch()
+    demo.launch(server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"))

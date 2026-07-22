@@ -41,3 +41,5 @@ results/
 
 # Stray/junk files
 =0.9.4
+
+model_cache/

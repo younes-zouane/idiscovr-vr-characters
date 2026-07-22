@@ -14,3 +14,4 @@ python-dotenv
 # torch is installed separately with the correct CUDA build — see README
 pytest
 pytest-mock
+transformers>=5.13,<5.15   # 5.14+ requires Python's sys.get_int_max_str_digits (final 3.11.0+); pin until confirmed stable on deadsnakes python

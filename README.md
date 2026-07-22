@@ -226,15 +226,36 @@ A `docker-compose.yml` sets up two containerized services: `ollama` (the
 LLM) and `app` (everything else). GPU passthrough is confirmed working.
 
 ```powershell
-docker compose build
 docker compose up -d
 docker exec idiscovr-ollama ollama pull llama3.1:8b
 ```
 
-**Current status:** the `app` container currently hangs during startup
-(somewhere in Kokoro/spaCy model loading) — see `KNOWN_ISSUES.md` for the
-full investigation and next steps. The `ollama` service works standalone.
-Native (non-Docker) setup per the steps above is the reliable path for now.
+(`docker compose up -d` builds the `app` image automatically on first run;
+use `docker compose build app` afterward if you change the Dockerfile.)
+
+Open `http://localhost:7860`. The `ollama` service has a healthcheck, and
+`app` waits for it to report healthy before starting — no need to wait and
+retry manually.
+
+**Current status:** fully working end-to-end, including GPU acceleration
+(STT, LLM, TTS, and video generation all confirmed running on GPU inside the
+container). Verified from a genuinely clean state — deleted volume, deleted
+both images, rebuilt from nothing, model re-pulled, full conversation with
+video worked on the first try. First request after a container starts is
+noticeably slower (~25s total) than subsequent ones (~12-13s) — this is
+one-time model-loading cost (Whisper, Kokoro), not a bug. Plan for one
+throwaway "warm-up" request before a live demo.
+
+Two Docker-specific fixes worth knowing about if debugging further, both
+documented in detail in `KNOWN_ISSUES.md`:
+- Gradio must bind to `0.0.0.0` inside the container (not the default
+  `127.0.0.1`) for Docker's port mapping to reach it — controlled via the
+  `GRADIO_SERVER_NAME` environment variable, already set in
+  `docker-compose.yml`.
+- faster-whisper's backend (CTranslate2) needs CUDA 12's cuBLAS
+  specifically, even though the rest of this image's CUDA stack (torch,
+  onnxruntime-gpu) is CUDA 13 — installed and pointed to via
+  `LD_LIBRARY_PATH` in the `Dockerfile`.
 
 ## Typical latency (RTX 5060 Ti, 16GB)
 

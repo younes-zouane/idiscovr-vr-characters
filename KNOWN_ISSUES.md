@@ -62,51 +62,60 @@ inside the container. See `Dockerfile` for the exact fix (forcing
 
 ---
 
-## Docker app container hangs during startup (Kokoro/spaCy model loading)
+## Docker app container startup — RESOLVED (was misdiagnosed as a hang)
 
-**Status:** Open, not yet debugged further since first discovered.
+**Status:** ✅ Resolved. What was previously documented as an indefinite
+hang during Kokoro/spaCy model loading was actually a slow first-run cold
+start (downloading ~350MB+ of models — Kokoro weights, spaCy's
+`en_core_web_sm` — over the network), not a real hang. Confirmed by
+patiently timing a full `docker compose up -d app` run: it reached
+`Model warm and ready` and a responsive Gradio server in ~3 minutes, which
+had previously been mistaken for "stuck" in earlier sessions that didn't
+wait long enough or track elapsed time. The build now also pre-loads
+Kokoro at image build time (`RUN python -c "from kokoro import KPipeline;
+KPipeline(lang_code='a', device='cpu')"` in the `Dockerfile`), per the
+guide's suggested fix, further reducing first-run cost.
 
-**Symptom:** `docker compose up -d app` starts the container, but it hangs
-indefinitely somewhere in the `from kokoro import KPipeline` import chain —
-specifically around spaCy's `en_core_web_sm` model download/load (used by
-Kokoro's `misaki` text-processing dependency). The exact hang point is
-inconsistent between runs: sometimes it completes the `en-core-web-sm`
-download and hangs after, sometimes it hangs before starting the download
-at all, even on a restart where the model should already be cached.
+Two genuinely new bugs were found and fixed while doing full end-to-end
+verification of the container (these were never part of the original
+"hang," they only became visible once the app was reachable and actually
+used):
 
-**What's been ruled out:**
-- Not a build problem — the image builds successfully every time.
-- Not a Python version issue — fixed separately (Ubuntu 22.04's `python3.11`
-  apt package is an unpatched `3.11.0rc1` missing `sys.get_int_max_str_digits`;
-  worked around with a compatibility shim in `src/config.py` rather than
-  fighting the deadsnakes PPA, which silently failed to register in this
-  build environment).
-- Not a general network outage — `curl` to huggingface.co from inside the
-  running (hung) container returns a normal `200`.
-- `docker stats` showed real (if modest) CPU and a `CLOSE_WAIT` TCP socket
-  with a stuck send queue during one hang, suggesting a stalled/half-dead
-  HTTP connection somewhere in the download chain, but this wasn't confirmed
-  as the root cause since `py-spy` (attempted for a real stack trace) was
-  blocked by Docker's default ptrace security restrictions.
+**1. Gradio only listening on 127.0.0.1 inside the container.**
+`demo.launch()` defaulted to binding `127.0.0.1`, which is fine natively
+(browser and app share the same machine) but unreachable from the host
+through Docker's port mapping — the container's `127.0.0.1` is not the
+same as the host's. Symptom: `ERR_EMPTY_RESPONSE` in the browser despite
+the container running and logs showing no errors. **Fix:**
+`demo.launch(server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"))`
+in `app.py`, with `GRADIO_SERVER_NAME=0.0.0.0` set in `docker-compose.yml`'s
+`app` service. Native behavior unchanged (env var unset → still defaults
+to `127.0.0.1`).
 
-**What works fine, confirmed:**
-- Docker Desktop itself (was fully broken — `hypervisorlaunchtype` was set to
-  `Off` at the Windows boot level; fixed via `bcdedit /set hypervisorlaunchtype auto` + reboot).
-- GPU passthrough (`--gpus all`) — confirmed working via `nvidia-smi` in a
-  test container.
-- `ollama` service runs standalone with no issues; `llama3.1:8b` pulled and
-  working.
+**2. faster-whisper (CTranslate2) needs CUDA 12's cuBLAS specifically.**
+Once the app was actually reachable and a real transcription was
+attempted, it failed with `RuntimeError: Library libcublas.so.12 is not
+found or cannot be loaded`. This container's CUDA stack (torch,
+onnxruntime-gpu) is CUDA 13, matching the base image — but CTranslate2
+4.8.1 (faster-whisper's inference backend) is compiled against CUDA 12
+and has no CUDA-13-compatible release. **Fix:** install `nvidia-cublas-cu12`
+specifically and point `LD_LIBRARY_PATH` at it, alongside (not replacing)
+the CUDA 13 stack everything else uses:
+```dockerfile
+RUN python -m pip install --no-cache-dir nvidia-cublas-cu12
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.11/dist-packages/nvidia/cublas/lib:${LD_LIBRARY_PATH}"
+```
 
-**Next steps to try:**
-1. Pre-download the spaCy model and Kokoro/Whisper weights **at Docker build
-   time** (as a `RUN` step in the Dockerfile) instead of at first container
-   startup — removes the runtime network dependency entirely, and would
-   isolate whether this is a download issue or a load/compile issue.
-2. Add explicit timeouts to whatever's making the network call, so it fails
-   fast and retries instead of hanging forever.
-3. Try running the container with more allocated resources (Docker Desktop
-   → Settings → Resources) in case something is being OOM-throttled silently.
-4. Revisit with `docker exec ... py-spy dump --pid 1 --nonblocking` or by
-   adding `--cap-add=SYS_PTRACE` to the compose service definition, to get
-   an actual Python stack trace of the hang instead of inferring from
-   network state.
+**Verification performed (per the Next Steps Guide's Part 2 checklist):**
+- Added an `ollama` healthcheck (`ollama list`, since the base image has
+  no `curl`/`wget`) and `depends_on: condition: service_healthy` on `app`,
+  so `app` genuinely waits for Ollama to be ready instead of racing it.
+- Did a real clean-state test: `docker compose down -v` (removes the
+  `ollama_data` volume too), deleted both images
+  (`idiscovr-vr-characters-app` and `ollama/ollama`), then
+  `docker compose up -d` from nothing. Both images rebuilt/re-pulled
+  correctly, `llama3.1:8b` re-pulled successfully, both containers came
+  up healthy, and a full conversation with video worked end-to-end on the
+  very first try.
+- Confirmed a restart (not a rebuild) reuses cached model weights rather
+  than re-downloading — cold start ~3 min, warm restart a few seconds.

@@ -6,6 +6,12 @@ services:
       - ollama_data:/root/.ollama
     ports:
       - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     deploy:
       resources:
         reservations:
@@ -19,12 +25,16 @@ services:
     build: .
     container_name: idiscovr-app
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - HF_HOME=/root/.cache/huggingface 
     volumes:
       - ./wav2lip-onnx-256/checkpoints:/app/wav2lip-onnx-256/checkpoints
       - ./idle_loops:/app/idle_loops
+      - ./model_cache:/root/.cache/huggingface
     ports:
       - "7860:7860"
     deploy:
