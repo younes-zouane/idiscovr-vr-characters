@@ -10,3 +10,6 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+norecursedirs = ["FasterLivePortrait-windows", "model_cache", "venv311", ".git"]

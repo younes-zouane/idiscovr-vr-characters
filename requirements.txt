@@ -9,6 +9,7 @@ opencv-python
 librosa
 scipy
 insightface
+onnxruntime==1.26.0  # faster-whisper pulls this in transitively; must match onnxruntime-gpu's version, same CUDA-12 reasoning as KNOWN_ISSUES.md
 onnxruntime-gpu==1.26.0
 python-dotenv
 # torch is installed separately with the correct CUDA build — see README
