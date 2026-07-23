@@ -12,7 +12,9 @@ insightface
 onnxruntime==1.26.0  # faster-whisper pulls this in transitively; must match onnxruntime-gpu's version, same CUDA-12 reasoning as KNOWN_ISSUES.md
 onnxruntime-gpu==1.26.0
 python-dotenv
-# torch is installed separately with the correct CUDA build — see README
 pytest
 pytest-mock
 transformers>=5.13,<5.15   # 5.14+ requires Python's sys.get_int_max_str_digits (final 3.11.0+); pin until confirmed stable on deadsnakes python
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
