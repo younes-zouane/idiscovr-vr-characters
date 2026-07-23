@@ -6,6 +6,7 @@ exclude = [
     "FasterLivePortrait-windows",
     "experiments",
     "venv311",
+    "fresh_venv", "*_venv"
 ]
 
 [tool.ruff.lint]
