@@ -192,3 +192,54 @@ Used discrete per-sentence audio files with `time.sleep(clip_duration)`
 pacing in the generator instead — functionally equivalent from the user's
 perspective (sentences play back-to-back as they're generated), just
 implemented at the yield level rather than via native audio streaming.
+
+
+## Part 4 — Batched Wav2Lip: blocked on missing source checkpoint
+
+**Status:** blocked at Step 1 (locate the source `.pth`). Flagged to
+supervisor rather than continuing to guess.
+
+Part 4 requires the original PyTorch checkpoint that produced
+`wav2lip_256.onnx`, per the guide's Step 1 ("locate it first; without it,
+stop and flag it"). `wav2lip-onnx-256/` was originally set up by
+downloading only the pre-converted ONNX file — the setup instructions were
+"download models from releases" (ONNX only) — so the source `.pth` was
+never obtained.
+
+Checked two independent sources, both mismatched:
+
+- **Source 1:** the vendored repo's own README cites Linly-Talker's README
+  as the checkpoint's origin. That page re-links to the standard
+  Rudrabha/Wav2Lip weights (official links are dead — see
+  [Rudrabha/Wav2Lip#739](https://github.com/Rudrabha/Wav2Lip/issues/739) —
+  used a verified mirror instead). Loaded successfully as a genuine Wav2Lip
+  model with correct layer names, but systematically narrower channel
+  widths than `wav2lip_256.py` (this repo's model class) expects — e.g.
+  `face_decoder_blocks.3.0.conv_block.0.weight`: checkpoint `[384, 384, 3,
+  3]` vs model `[512, 512, 3, 3]`, consistent across every decoder block.
+- **Source 2:** `numz/wav2lip_studio` on HuggingFace (ONNX-focused Wav2Lip
+  project, closer ecosystem match). Verified via SHA256
+  (`b78b681b...ef63c37`). After stripping the `module.` DataParallel
+  prefix, same result: identical shape mismatches to Source 1, confirming
+  it's the same standard architecture, not the wide-channel 256px variant
+  this repo actually uses.
+- Also checked Linly-Talker's separate "Wav2Lipv2" reference
+  (primepake/wav2lip_288x288) — different architecture family (SAM-UNet,
+  PReLU/LeakyReLU, 288/384/512px only), no checkpoint published.
+
+**Conclusion:** two independent, credible sources both converge on the
+standard/narrow Wav2Lip architecture, which is not what `wav2lip_256.py`
+defines. The wide-channel 256px variant this repo's ONNX was built from
+doesn't appear to be published anywhere findable under an obvious name —
+likely a bespoke retrain, and since only the pre-converted ONNX was ever
+obtained, there's no further way to trace it from this project alone.
+
+Flagged to supervisor. Options under consideration: (1) skip the re-export,
+keep `wav2lip_256.onnx` as-is at batch=1, accept current ~7-9s video gen;
+(2) longer-term, evaluate switching lip-sync families entirely (e.g.
+MuseTalk), per the guide's own aside — a bigger decision than this task.
+
+Per the guide's closing note: *"a clear write-up of a failure is worth more
+than a silent half-working success."* Steps 2-5 (dynamic batch export,
+correctness proof, batch-size sweep, FP16) are not attempted, since they
+all depend on having the correct source checkpoint first.
