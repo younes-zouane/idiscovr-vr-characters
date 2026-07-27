@@ -243,3 +243,114 @@ Per the guide's closing note: *"a clear write-up of a failure is worth more
 than a silent half-working success."* Steps 2-5 (dynamic batch export,
 correctness proof, batch-size sweep, FP16) are not attempted, since they
 all depend on having the correct source checkpoint first.
+
+## Part 5 — LatentSync evaluation (supervisor follow-up after Part 4 blocked)
+
+**Context:** after Part 4 (batched Wav2Lip) was blocked on the missing
+source checkpoint and flagged to the supervisor, visual quality tests of
+LatentSync on Genie and Aladdin passed. Before deciding whether to replace
+Wav2Lip, the supervisor requested two hard numbers: video-gen latency
+comparison, and peak GPU memory with the full pipeline (Ollama + Whisper +
+Kokoro + lip-sync backend) loaded.
+
+### Part 5.1 — Video generation latency: Wav2Lip vs LatentSync
+
+**Methodology:** LatentSync run via its own dedicated venv (separate
+dependency stack — different torch version, `insightface==0.7.3`, etc. —
+not directly importable into `venv311`). 5 consecutive subprocess
+invocations of `scripts.inference`, same audio clip and character image
+each time, wall-clock timed with `subprocess.run` + `sys.executable`
+(not shell `date`/`bc`, which proved unreliable in this Git Bash setup).
+Run 5 was interrupted (`KeyboardInterrupt`) and excluded; the 4 clean runs
+were extremely consistent (173.68–175.97s, <2.5s spread).
+
+| Run | Time |
+|---|---|
+| 1 | 173.72s |
+| 2 | 175.97s |
+| 3 | 174.90s |
+| 4 | 173.68s |
+| **Average** | **174.57s** |
+
+**Comparison table:**
+
+| Model | Video-gen time | vs. Wav2Lip |
+|---|---|---|
+| Wav2Lip | ~7-9s | baseline |
+| LatentSync (full subprocess run, incl. model reload) | **174.57s** | **~20-24x slower** |
+| LatentSync (steady-state inference step only, per the script's own reported `Doing inference...` timing) | ~125s | ~15-18x slower |
+
+**Fairness caveat, stated explicitly:** Wav2Lip's ~7-9s figure reflects
+this app's actual behavior — the ONNX session loads once at startup and is
+reused across every conversation turn. LatentSync's 174.57s figure
+includes reloading the diffusion checkpoint and InsightFace's face-detection
+models fresh on every run, since each measurement was a separate subprocess
+(LatentSync's own dependency stack can't currently be loaded persistently
+inside this app's process — see Part 5.2 methodology below for why).
+A production integration that kept LatentSync's models resident, the same
+way Wav2Lip's are, would land closer to the ~125s inference-only figure.
+Even using that more generous number, LatentSync remains over an order of
+magnitude slower than Wav2Lip on this hardware and these settings.
+
+**Conclusion (latency alone):** Wav2Lip is dramatically faster —
+roughly 15-24x depending on which LatentSync figure is used. This is a
+decision-relevant number regardless of methodology nuance.
+
+### Part 5.2 — Peak GPU memory (combined pipeline)
+
+**Methodology:** Configuration A measured directly in the real app
+(`venv311`) — Ollama + Whisper + Kokoro loaded, one full Wav2Lip
+conversation turn triggered, `nvidia-smi` polled every 0.5s throughout.
+Configuration B measured with the same `venv311` app loaded and idle
+(Ollama + Whisper + Kokoro resident, no Wav2Lip turn), while LatentSync
+ran one full inference in its own separate venv at the same time — GPU
+memory is a physical resource shared across all processes on the card
+regardless of which Python environment they run in, so the combined
+`nvidia-smi` peak is a valid measurement without needing cross-venv
+integration.
+
+| Configuration | Baseline (idle, monitor start) | Peak | Peak (GB) | GPU utilization |
+|---|---|---|---|---|
+| A: Ollama + Whisper + Kokoro + Wav2Lip | 1,243 MiB | 9,972 MiB | 9.74 GB | 61% of 16GB card |
+| B: Ollama + Whisper + Kokoro + LatentSync | 9,940 MiB¹ | 15,994 MiB | 15.62 GB | **97.6% of 16GB card** |
+
+¹ Config B's baseline (idle app, no LatentSync yet) closely matches
+Config A's peak (9,972 MiB) — good internal consistency check, confirming
+Ollama + Whisper + Kokoro's own footprint is stable (~9.9GB) independent
+of which lip-sync backend runs on top.
+
+**Secondary finding — GPU contention degrades LatentSync's own latency:**
+under combined load, LatentSync's inference step took **6:08 (368s)**,
+compared to **2:05 (125s)** when run in isolation during Part 5.1 — nearly
+3x slower. This is a real, measured effect of near-saturated VRAM (97.6%
+utilized), not a fluke; per-batch sample-generation steps that normally
+took ~12-13s each took 58s and 99s for the first two batches under
+contention. This means Part 5.1's isolated 174.57s figure actually
+*understates* LatentSync's real-world cost when run as part of the full
+pipeline — the honest combined-load number is closer to 6+ minutes for
+inference alone, before the face-detection and restoration steps.
+
+**Conclusion (memory + combined-load latency):** LatentSync leaves the
+16GB card almost completely saturated (400MB headroom) and is
+substantially slower under realistic combined load than in isolation.
+Wav2Lip uses roughly 60% of available VRAM with comfortable headroom
+remaining.
+
+### Final comparison table and recommendation
+
+| Metric | Wav2Lip | LatentSync |
+|---|---|---|
+| Video-gen latency (isolated) | ~7-9s | ~125-175s (15-24x slower) |
+| Video-gen latency (combined GPU load, realistic) | ~7-9s (already measured under combined load — this *is* Config A) | ~368s inference alone (~3x slower than its own isolated figure) |
+| Peak combined GPU memory | 9.74 GB (61%) | 15.62 GB (97.6%) |
+| Visual quality (Genie, Aladdin) | Baseline | Passed, supervisor-confirmed |
+
+**Recommendation:** on the current hardware (RTX 5060 Ti, 16GB), LatentSync's
+visual quality improvement does not offset its cost — it is 15-24x slower
+in isolation and up to ~3x slower again under the realistic combined-pipeline
+load this app actually runs, while consuming nearly all available VRAM with
+almost no headroom. Wav2Lip remains the appropriate choice for this
+project's current hardware and latency requirements. LatentSync (or a
+comparable modern architecture like MuseTalk, mentioned in Part 4's
+write-up) may be worth revisiting if hardware changes or if latency
+requirements relax significantly for a future non-interactive use case.
