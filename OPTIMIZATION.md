@@ -354,3 +354,29 @@ project's current hardware and latency requirements. LatentSync (or a
 comparable modern architecture like MuseTalk, mentioned in Part 4's
 write-up) may be worth revisiting if hardware changes or if latency
 requirements relax significantly for a future non-interactive use case.
+
+
+📊 Alternative Audio-to-Video Pipeline Evaluation: LivePortrait + JoyVASA
+
+**Status:** Testing Concluded (Do Not Proceed to Optimization)
+
+#### Executive Summary
+LivePortrait combined with JoyVASA represents a significant technological leap over traditional lip-syncing tools like Wav2Lip. Because it animates the entire face (including head tilts, micro-expressions, and emotional cadence), the output looks inherently more dynamic and modern than models that only modify the mouth region.
+
+However, when evaluated against stylized or cartoon assets (Genie), the model's full-face motion vectors cause structural warping and edge artifacts. Because it triggers the "distorted/uncanny" quality gate established for MuseTalk, we are halting further VRAM/latency benchmarking to avoid an open-ended optimization rabbit hole.
+
+#### ⚖️ Comparative Analysis
+
+| Metric / Aspect | Wav2Lip (Baseline) | LivePortrait + JoyVASA |
+| :--- | :--- | :--- |
+| **Animation Scope** | Lip region only (static face). | Full facial expression, eye blinks, and head pose. |
+| **Visual Ambition** | Low (looks robotic/flat). | High (looks organic and lively). |
+| **Stylized Art Risk** | Low (preserves character artwork). | High (warps facial geometry out of bounds). |
+| **Current Result** | Fails on pipeline mismatch. | **Fails on quality gate (uncanny/distorted).** |
+
+#### 🛠️ Technical Insights & Blockers
+* **The Style Mapping Problem:** LivePortrait relies on human facial landmarks. When driving a stylized character like Genie, the mathematical translations stretch 2D artwork unnaturally, ruining the character's intended aesthetic.
+* **Production Viability:** While LivePortrait is visually superior for photorealistic human faces, a production environment requires absolute stability. Perfecting this for stylized art would require extensive expression-slider tuning and asset-specific retraining, which falls outside current project scopes.
+
+#### 🚀 Future Recommendation
+If the project pivots towards hyper-realistic human avatars in the future, LivePortrait + JoyVASA should be the immediate first choice. For the current stylized project, it is officially logged as a quality failure, and we are moving on to finalize the remaining pipeline documentation.
