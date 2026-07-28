@@ -119,3 +119,24 @@ ENV LD_LIBRARY_PATH="/usr/local/lib/python3.11/dist-packages/nvidia/cublas/lib:$
   very first try.
 - Confirmed a restart (not a rebuild) reuses cached model weights rather
   than re-downloading — cold start ~3 min, warm restart a few seconds.
+
+
+## VR service (vr_service.py): silent CPU fallback on first run — CAUGHT, RESOLVED
+
+**Status:** ✅ Resolved, and now defended against automatically.
+
+When `fastapi`/`uvicorn` were first installed for the new VR headless
+endpoint, `onnxruntime` (CPU-only) got pulled in as a side effect and
+silently shadowed the pinned `onnxruntime-gpu==1.26.0` — the exact same
+class of bug documented above for the main app, just triggered by a
+different pip install. First symptom was a `UserWarning` at startup:
+`Specified provider 'CUDAExecutionProvider' is not in available provider
+names`. Fixed the same way: `pip uninstall onnxruntime onnxruntime-gpu -y`
+then reinstall the pin.
+
+**Prevention added:** `vr_service.py` now checks
+`onnxruntime.get_available_providers()` at startup and logs a loud warning
+if `CUDAExecutionProvider` is missing, instead of failing silently into
+slow CPU inference. Given this is the second time this exact failure mode
+has appeared in this project, worth considering the same check in
+`app.py`/`src/config.py` too.

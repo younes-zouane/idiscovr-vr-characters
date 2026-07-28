@@ -367,3 +367,21 @@ Because of this, the pipeline as a whole cannot be used commercially without
 separately licensing both from their original authors. Full details,
 including direct quotes from both projects' licensing terms, are in
 [`NOTICE.md`](./NOTICE.md).
+
+
+## VR headless backend (vr_service.py)
+
+A separate FastAPI service for VR client integration (Unity/Unreal),
+since Gradio's UI can't be driven by a game engine. Runs alongside or
+instead of `app.py`.
+
+```powershell
+python vr_service.py
+```
+
+Exposes `POST /v1/vr-chat` (interactive docs at `http://localhost:8000/docs`):
+accepts `character_name` + `audio_file` (+ optional `session_id` to
+continue a prior conversation), returns transcript text plus URLs to
+generated voice/video files. Each unique `session_id` gets its own
+conversation memory — omit it on a client's first call to get a new one
+back in the response, then reuse it for that client's later calls.

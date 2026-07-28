@@ -380,3 +380,28 @@ However, when evaluated against stylized or cartoon assets (Genie), the model's 
 
 #### 🚀 Future Recommendation
 If the project pivots towards hyper-realistic human avatars in the future, LivePortrait + JoyVASA should be the immediate first choice. For the current stylized project, it is officially logged as a quality failure, and we are moving on to finalize the remaining pipeline documentation.
+
+## Part 6 — VR headless backend (vr_service.py)
+
+Replaced the Gradio UI with a FastAPI REST endpoint (`POST /v1/vr-chat`)
+for VR client integration (Unity/Unreal can't drive a Gradio page).
+Two fixes over the first draft: per-session conversation history (keyed
+by session_id, not shared globally per character) and URL-based file
+delivery instead of base64-in-JSON (better fit for a VR client parsing
+this on a standalone headset).
+
+**Verified manually via Swagger UI (`/docs`):**
+- GPU: `CUDAExecutionProvider confirmed available` at startup (a CPU
+  fallback regression was caught and fixed here too — see KNOWN_ISSUES.md).
+- Session memory: multi-turn conversation within one session_id correctly
+  recalled specific prior content ("three wishes," "trifles") when asked
+  "what did I just ask you?".
+- Session isolation: a fresh session with unrelated content ("I have a
+  pet turtle named Steve") did not leak into a separate, simultaneously
+  active fresh session — confirming concurrent VR users won't share
+  conversation state. (First isolation test attempt was inconclusive —
+  both sessions coincidentally involved Genie's own "wishes" persona
+  theme, which the LLM could plausibly improvise on its own; redone with
+  unrelated content for an unambiguous result.)
+- File delivery: both `voice_audio_url` and `talking_video_url` played
+  correctly when opened directly in-browser.
