@@ -1,17 +1,25 @@
 """
-VR Backend Integration Service
+Headless Backend Service
 
-Headless REST endpoint for VR clients (Unity/Unreal), replacing the Gradio UI
-for that use case. Reuses the existing pipeline modules (stt, llm, tts, lipsync)
-exactly as the main app.py does.
+REST endpoint replacing the Gradio UI for non-browser clients — per the
+supervisor's request: "make a service that sends audio, gets back to us
+transcript, voice, and video." Reuses the existing pipeline modules (stt,
+llm, tts, lipsync) exactly as app.py does; Gradio's own UI loop can't be
+driven by a non-browser client, hence a plain HTTP/JSON API instead.
 
-Two things fixed vs. the first draft:
-1. Per-session conversation history, keyed by session_id (not shared globally
-   per character) — required for more than one concurrent VR user.
-2. Audio/video returned as URLs to static files, not embedded base64 in the
-   JSON body — base64-in-JSON is a poor fit for a VR client parsing this on
-   a standalone headset (Unity's JsonUtility on multi-MB strings is slow and
-   memory-heavy, and base64 inflates binary size ~33% on top of that).
+Two design choices worth flagging if a specific client (Unity, a web
+frontend, etc.) is decided on later:
+
+1. Per-session conversation history, keyed by session_id (not shared
+   globally per character) — required to support more than one concurrent
+   user correctly; each session gets independent conversation memory.
+2. Audio/video are returned as URLs to static files, not embedded as
+   base64 in the JSON body. This keeps the response small and lets a
+   client fetch large binary payloads (especially video) as a separate,
+   simple GET rather than parsing them out of one large JSON blob — a
+   reasonable default regardless of what ends up consuming this API,
+   though the ideal transport could be revisited once an actual client
+   is chosen.
 """
 
 import logging
