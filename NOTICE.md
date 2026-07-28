@@ -43,6 +43,25 @@ constraint on the whole project, not just those components — see
   `scrfd_2.5g_bnkps.onnx` detection model (committed to this repo, small
   file) used to locate and crop character faces before lip-sync inference.
 
+## FasterLivePortrait (`FasterLivePortrait-windows/`, experimental idle-loop feature)
+
+- **Source:** https://github.com/warmshao/FasterLivePortrait, wrapping
+  https://github.com/KwaiVGI/LivePortrait
+- **License:** LivePortrait's own code is MIT. However, its default
+  face-detection pipeline uses insightface's pre-trained models, which
+  carry the same non-commercial research-only restriction already
+  documented above for `wav2lip-onnx-256/insightface_func/`.
+- **What this project uses:** experimental idle head-motion loop
+  generation (subtle motion/blinking) for four characters (Genie, Aladdin,
+  Princess, Sorcerer), described in the README under "Idle-loop head motion."
+  This lives in a separate, untracked folder/venv
+  (`FasterLivePortrait-windows/`) and is not yet wired into live speaking
+  segments — it only produces standalone idle-loop clips.
+- **Licensing impact:** no change to the overall constraint already stated
+  below — this component reaches the same insightface non-commercial
+  restriction through a different codebase, it doesn't add a new category
+  of restriction on top of what's already disclosed.
+
 ## What this means for iDISCOVR
 
 Because this project's lip-sync pipeline depends on both a Wav2Lip model
