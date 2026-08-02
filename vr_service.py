@@ -93,7 +93,7 @@ def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
 
 
 @app.post("/v1/vr-chat")
-async def vr_chat_endpoint(
+def vr_chat_endpoint(
     character_name: str = Form(...),
     audio_file: UploadFile = File(...),
     session_id: str | None = Form(default=None),
@@ -119,7 +119,7 @@ async def vr_chat_endpoint(
 
     try:
         with open(temp_mic_path, "wb") as f:
-            f.write(await audio_file.read())
+            f.write(audio_file.file.read())
 
         user_text = transcribe(temp_mic_path)
         if not user_text:
