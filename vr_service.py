@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydub import AudioSegment
 
-from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS
+from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTER_IMAGES, CHARACTERS
 from src.lipsync import generate_talking_video
 from src.llm import init_conversation_histories, stream_character_reply
 from src.sentence_splitter import split_into_sentences
@@ -71,6 +71,40 @@ app = FastAPI(title="VR Character Animation Headless Service")
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "idiscovr_vr_outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 app.mount("/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
+app.mount("/character_images", StaticFiles(directory="character_images"), name="character_images")
+
+
+@app.get("/health")
+def health_endpoint():
+    """Are the models loaded, is CUDA available. Used as the Docker healthcheck
+    and by any client to know when the service is actually ready."""
+    return {
+        "status": "ok",
+        "cuda_available": "CUDAExecutionProvider" in _providers,
+        "onnxruntime_version": onnxruntime.__version__,
+    }
+
+
+@app.get("/characters")
+def characters_endpoint():
+    """id, display name, whether it's audio-only, and a portrait URL for each
+    character — so a client doesn't have to hardcode character names."""
+    return {
+        "characters": [
+            {
+                "id": name,
+                "display_name": name,
+                "audio_only": name in AUDIO_ONLY_CHARACTERS,
+                "portrait_url": (
+                    f"/character_images/{os.path.basename(CHARACTER_IMAGES[name])}"
+                    if name in CHARACTER_IMAGES
+                    else None
+                ),
+            }
+            for name in CHARACTERS
+        ]
+    }
+
 
 # --- Per-session state ---
 # session_id -> {character_name: history_list}
