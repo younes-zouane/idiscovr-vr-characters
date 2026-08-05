@@ -4,6 +4,8 @@ import sys
 import sysconfig
 from pathlib import Path
 
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 from dotenv import load_dotenv
 
 # Ubuntu 22.04's python3.11 package is a pre-release build (3.11.0rc1) missing

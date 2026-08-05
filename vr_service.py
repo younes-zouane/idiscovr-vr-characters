@@ -22,15 +22,18 @@ frontend, etc.) is decided on later:
    is chosen.
 """
 
+import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydub import AudioSegment
 
@@ -92,8 +95,8 @@ def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
         return new_id, _sessions[new_id]
 
 
-@app.post("/v1/vr-chat")
-def vr_chat_endpoint(
+@app.post("/v1/vr-chat-sync")
+def vr_chat_sync_endpoint(
     character_name: str = Form(...),
     audio_file: UploadFile = File(...),
     session_id: str | None = Form(default=None),
@@ -179,6 +182,119 @@ def vr_chat_endpoint(
     finally:
         if os.path.exists(temp_mic_path):
             os.remove(temp_mic_path)
+
+
+def _format_sse(event: str, data: dict) -> str:
+    """One Server-Sent Event: an event name line plus a JSON data line, blank-line terminated."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.post("/v1/vr-chat-stream")
+def vr_chat_stream_endpoint(
+    character_name: str = Form(...),
+    audio_file: UploadFile = File(...),
+    session_id: str | None = Form(default=None),
+):
+    """
+    Same pipeline as /v1/vr-chat-sync, but sends one SSE event per stage as
+    it becomes ready instead of one JSON blob at the end.
+    """
+    if character_name not in CHARACTERS:
+        raise HTTPException(status_code=400, detail=f"Character '{character_name}' not found.")
+
+    effective_session_id, histories = get_or_create_session(session_id)
+    history = histories[character_name]
+
+    temp_mic_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    with open(temp_mic_path, "wb") as f:
+        f.write(audio_file.file.read())
+
+    def event_stream():
+        sentence_files = []
+        t_start = time.time()
+        try:
+            user_text = transcribe(temp_mic_path)
+            t_stt = time.time()
+            log.info("TIMING stt=%.2fs", t_stt - t_start)
+            if not user_text:
+                yield _format_sse("error", {"code": "stt_failed", "message": "Could not understand incoming audio."})
+                return
+
+            yield _format_sse("transcript", {"session_id": effective_session_id, "user_transcript": user_text})
+
+            full_assistant_reply = ""
+            buffer = ""
+
+            def handle_sentence(sentence_text: str) -> str:
+                nonlocal full_assistant_reply
+                full_assistant_reply += sentence_text + " "
+                raw_path = speak(sentence_text, character_name)
+                sentence_files.append(raw_path)
+                request_id = uuid.uuid4().hex
+                public_path = OUTPUT_DIR / f"{request_id}.wav"
+                shutil.copy(raw_path, public_path)
+                return request_id
+
+            t_first_token = None
+            t_first_sentence = None
+            for delta in stream_character_reply(character_name, user_text, history):
+                if t_first_token is None:
+                    t_first_token = time.time()
+                    log.info("TIMING first_llm_token=%.2fs (since request start)", t_first_token - t_start)
+                buffer += delta
+                sentences, buffer = split_into_sentences(buffer)
+                for sentence in sentences:
+                    request_id = handle_sentence(sentence)
+                    if t_first_sentence is None:
+                        t_first_sentence = time.time()
+                        log.info("TIMING first_sentence_ready=%.2fs (since request start)", t_first_sentence - t_start)
+                    yield _format_sse("sentence_audio", {"text": sentence, "audio_url": f"/files/{request_id}.wav"})
+
+            if buffer.strip():
+                request_id = handle_sentence(buffer.strip())
+                yield _format_sse("sentence_audio", {"text": buffer.strip(), "audio_url": f"/files/{request_id}.wav"})
+
+            yield _format_sse("reply_text", {"character_transcript": full_assistant_reply.strip()})
+
+            if not sentence_files:
+                yield _format_sse(
+                    "error", {"code": "llm_unavailable", "message": "Failed to synthesize vocal replies."}
+                )
+                return
+
+            combined = AudioSegment.empty()
+            for path in sentence_files:
+                combined += AudioSegment.from_wav(path)
+            combined_request_id = uuid.uuid4().hex
+            combined_wav_path = str(OUTPUT_DIR / f"{combined_request_id}.wav")
+            combined.export(combined_wav_path, format="wav")
+
+            video_url = None
+            if character_name not in AUDIO_ONLY_CHARACTERS:
+                try:
+                    video_filename = f"{combined_request_id}.mp4"
+                    video_output_path = str(OUTPUT_DIR / video_filename)
+                    generate_talking_video(character_name, combined_wav_path, output_path=video_output_path)
+                    video_url = f"/files/{video_filename}"
+                except Exception as e:
+                    log.error("Video generation failed: %s", e, exc_info=True)
+                    yield _format_sse("error", {"code": "video_failed", "message": str(e)})
+
+            yield _format_sse("video", {"video_url": video_url})
+            yield _format_sse("done", {})
+
+        except Exception as e:
+            log.error("VR stream pipeline error: %s", e, exc_info=True)
+            yield _format_sse("error", {"code": "pipeline_failed", "message": str(e)})
+
+        finally:
+            if os.path.exists(temp_mic_path):
+                os.remove(temp_mic_path)
+            for path in sentence_files:
+                if os.path.exists(path):
+                    os.remove(path)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":

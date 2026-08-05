@@ -140,3 +140,13 @@ if `CUDAExecutionProvider` is missing, instead of failing silently into
 slow CPU inference. Given this is the second time this exact failure mode
 has appeared in this project, worth considering the same check in
 `app.py`/`src/config.py` too.
+
+## SSE chosen over WebSockets for the streaming endpoint
+
+The client sends one complete audio file per request (not continuous mic
+streaming), and only needs one-directional server→client updates
+(transcript, then audio, then video) as they become ready — SSE's exact
+use case. WebSockets would be the right choice later if hands-free
+continuous listening is built, since that needs the client to stream audio
+to the server too, which SSE can't do.
+

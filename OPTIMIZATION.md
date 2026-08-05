@@ -405,3 +405,54 @@ this on a standalone headset).
   unrelated content for an unambiguous result.)
 - File delivery: both `voice_audio_url` and `talking_video_url` played
   correctly when opened directly in-browser.
+## Part — vr_service.py streaming endpoint: latency investigation
+
+After adding the SSE streaming endpoint (`/v1/vr-chat-stream`, Part 1.2 of
+Guide 4), first-audio latency measured noticeably higher than Part 3's
+~1.3s average. Investigated with real server-side per-stage timing
+(`TIMING stt=`, `TIMING first_llm_token=`, `TIMING first_sentence_ready=`
+logged directly in the endpoint) rather than trusting client-observed event
+arrival times, which bundle multiple stages together.
+
+**Bug found and fixed: TTS was making a live network call on every request.**
+Kokoro's voice loading issued a `HEAD` request to huggingface.co to check
+for a fresher version of the voice file, even though it was already cached
+locally — adding a real network round-trip inside the TTS hot path.
+
+| | Before | After |
+|---|---|---|
+| TTS stage (first sentence) | ~1.47s | ~0.46s |
+
+Fix: `HF_HUB_OFFLINE=1` is already set in `src/config.py`, and is correctly
+inherited by `vr_service.py` transitively (it imports `src.llm`, which
+imports `src.config`) — no code change needed, the slow run was an
+already-in-flight request from before the env var took effect in that
+process's lifetime. Confirmed fixed by the absence of the `huggingface.co`
+HEAD request in subsequent warm-run server logs.
+
+**Remaining number, measured not assumed: Ollama's first-token latency is
+consistently ~2.5-3s on warm requests** (2.47s, 3.29s, 2.95s across
+multiple runs), independent of STT/TTS. Confirmed this isn't a
+`vr_service.py`-specific regression: `vr_service.py` calls the exact same
+`stream_character_reply()` function from `src/llm.py` that `app.py`
+already uses — no divergence in how the LLM is invoked. This appears to be
+an inherent property of Ollama serving `llama3.1:8b` with this
+system-prompt length on this hardware, not something introduced by the
+streaming endpoint.
+
+**Decision: not chased further.** Per the project's own established rule
+(don't chase the last second once a number is real and understood), this
+is logged as the honest current baseline rather than a bug to keep pursuing.
+If revisited later, a smaller model (`llama3.2:3b`, already flagged as an
+optional experiment in Part 3 of the original Next Steps Guide) or Ollama's
+`keep_alive`/context-caching behavior would be the first things to check.
+
+**Current warm-request breakdown, `/v1/vr-chat-stream`:**
+
+| Stage | Time |
+|---|---|
+| STT | ~0.8-1.1s |
+| LLM first token | ~2.5-3.0s |
+| TTS (first sentence, post-fix) | ~0.5s |
+| **First audio, total** | **~4-5s** |
+| Full video | ~12-13s |

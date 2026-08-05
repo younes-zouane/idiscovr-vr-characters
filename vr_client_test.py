@@ -26,7 +26,7 @@ def send_message(character_name: str, audio_path: str, session_id: str | None = 
         data = {"character_name": character_name}
         if session_id:
             data["session_id"] = session_id
-        response = requests.post(f"{BASE_URL}/v1/vr-chat", files=files, data=data, timeout=120)
+        response = requests.post(f"{BASE_URL}/v1/vr-chat-sync", files=files, data=data, timeout=120)
     response.raise_for_status()
     return response.json()
 
