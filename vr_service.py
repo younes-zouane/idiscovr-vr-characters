@@ -83,6 +83,14 @@ app.mount("/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
+# Only one request may run the actual pipeline (Whisper, TTS, the Wav2Lip
+# ONNX session) at a time. Concurrent requests would otherwise contend for
+# the same GPU/VRAM — the exact effect measured during the LatentSync
+# evaluation, where steps ran ~3x slower under simultaneous load. A second
+# request while one is in flight gets a fast 429 "busy" response instead of
+# silently queueing behind degraded work.
+_gpu_slot = threading.Semaphore(1)
+
 
 def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
     """Return (session_id, histories_dict). Creates a new session if the
@@ -114,6 +122,9 @@ def vr_chat_sync_endpoint(
 
     effective_session_id, histories = get_or_create_session(session_id)
     history = histories[character_name]
+
+    if not _gpu_slot.acquire(timeout=0.1):
+        raise HTTPException(status_code=429, detail={"code": "busy"})
 
     temp_mic_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
     request_id = uuid.uuid4().hex
@@ -180,6 +191,7 @@ def vr_chat_sync_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
+        _gpu_slot.release()
         if os.path.exists(temp_mic_path):
             os.remove(temp_mic_path)
 
@@ -204,6 +216,9 @@ def vr_chat_stream_endpoint(
 
     effective_session_id, histories = get_or_create_session(session_id)
     history = histories[character_name]
+
+    if not _gpu_slot.acquire(timeout=0.1):
+        raise HTTPException(status_code=429, detail={"code": "busy"})
 
     temp_mic_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
     with open(temp_mic_path, "wb") as f:
@@ -288,6 +303,7 @@ def vr_chat_stream_endpoint(
             yield _format_sse("error", {"code": "pipeline_failed", "message": str(e)})
 
         finally:
+            _gpu_slot.release()
             if os.path.exists(temp_mic_path):
                 os.remove(temp_mic_path)
             for path in sentence_files:
