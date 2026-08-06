@@ -20,27 +20,31 @@ import tempfile
 
 from pydub import AudioSegment
 
-from src.characters import AUDIO_ONLY_CHARACTERS
+from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS
 from src.lipsync import generate_talking_video
 from src.llm import stream_character_reply
 from src.sentence_splitter import split_into_sentences
+from src.guardrails import MAX_REPLY_SENTENCES, check_input, clean_sentence
 
 log = logging.getLogger(__name__)
 
 
 def stream_reply_sentences(character_name, user_text, history, on_first_token=None):
     """
-    Streams the character's LLM reply and yields each completed sentence as
-    plain text, including a trailing fragment with no closing punctuation
-    once the stream ends. No TTS here — see module docstring.
-
-    on_first_token, if given, is called once (no args) the moment the first
-    raw LLM token arrives. Needed by vr_service.py's stream endpoint, which
-    logs token-level timing separately from sentence-level timing; without
-    this hook that instrumentation would need its own copy of this loop.
+    Streams the character's LLM reply and yields each completed sentence
+    as plain text. Runs Layer 2 guardrails first: a blocked input never
+    reaches the LLM at all — it yields the character's own refusal line
+    (from characters.py) as the single "sentence" and returns immediately,
+    which is why a blocked reply is faster than a normal one.
     """
+    allowed, reason = check_input(user_text)
+    if not allowed:
+        yield CHARACTERS[character_name]["refusal"]
+        return
+
     buffer = ""
     first_token_seen = False
+    sentence_count = 0
     for delta in stream_character_reply(character_name, user_text, history):
         if not first_token_seen:
             first_token_seen = True
@@ -48,9 +52,17 @@ def stream_reply_sentences(character_name, user_text, history, on_first_token=No
                 on_first_token()
         buffer += delta
         sentences, buffer = split_into_sentences(buffer)
-        yield from sentences
-    if buffer.strip():
-        yield buffer.strip()
+        for sentence in sentences:
+            if sentence_count >= MAX_REPLY_SENTENCES:
+                return  # cap hit — stop pulling more from the LLM stream
+            cleaned = clean_sentence(sentence)
+            if cleaned:
+                sentence_count += 1
+                yield cleaned
+    if buffer.strip() and sentence_count < MAX_REPLY_SENTENCES:
+        cleaned = clean_sentence(buffer.strip())
+        if cleaned:
+            yield cleaned
 
 
 def combine_audio(sentence_audio_paths, output_path=None):
