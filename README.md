@@ -379,9 +379,31 @@ instead of `app.py`.
 python vr_service.py
 ```
 
-Exposes `POST /v1/vr-chat` (interactive docs at `http://localhost:8000/docs`):
+Exposes two endpoints (interactive docs at `http://localhost:8000/docs`):
+- `POST /v1/vr-chat-sync` — one-shot request, full JSON response at the end.
+- `POST /v1/vr-chat-stream` — same pipeline, but streams SSE events per stage (transcript, then each sentence's audio, then video) as they become ready.
+
 accepts `character_name` + `audio_file` (+ optional `session_id` to
 continue a prior conversation), returns transcript text plus URLs to
 generated voice/video files. Each unique `session_id` gets its own
 conversation memory — omit it on a client's first call to get a new one
 back in the response, then reuse it for that client's later calls.
+
+
+### Quick test (no code required)
+
+Text/voice reply from the Genie, one shot:
+
+​```bash
+curl -X POST http://localhost:8000/v1/vr-chat-sync \
+  -F "character_name=Genie" \
+  -F "audio_file=@test_audio.wav"
+​```
+
+For a streaming reply (audio arrives sentence-by-sentence, video last):
+
+​```bash
+curl -N -X POST http://localhost:8000/v1/vr-chat-stream \
+  -F "character_name=Genie" \
+  -F "audio_file=@test_audio.wav"
+​```
