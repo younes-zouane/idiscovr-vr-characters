@@ -154,7 +154,7 @@ def test_vr_chat_full_flow_audio_only(silent_wav_bytes, fake_speak):
     with (
         patch("vr_service.transcribe", return_value="What is your wish?"),
         patch(
-            "vr_service.stream_character_reply",
+            "src.pipeline.stream_character_reply",
             side_effect=_fake_stream(
                 "Ah, what a marvelous wish that is indeed!",
                 "Bold choice, my friend, very bold indeed.",
@@ -181,8 +181,8 @@ def test_vr_chat_full_flow_audio_only(silent_wav_bytes, fake_speak):
 def test_vr_chat_full_flow_with_video(silent_wav_bytes, fake_speak):
     with (
         patch("vr_service.transcribe", return_value="Tell me a riddle."),
-        patch("vr_service.stream_character_reply", side_effect=_fake_stream("Here is one.")),
-        patch("vr_service.generate_talking_video", return_value="/tmp/fake.mp4") as mock_video,
+        patch("src.pipeline.stream_character_reply", side_effect=_fake_stream("Here is one.")),
+        patch("src.pipeline.generate_talking_video", return_value="/tmp/fake.mp4") as mock_video,
     ):
         response = client.post(
             "/v1/vr-chat-sync",
@@ -203,8 +203,8 @@ def test_vr_chat_video_failure_still_returns_audio(silent_wav_bytes, fake_speak)
     back with video_error set."""
     with (
         patch("vr_service.transcribe", return_value="Hello"),
-        patch("vr_service.stream_character_reply", side_effect=_fake_stream("Greetings.")),
-        patch("vr_service.generate_talking_video", side_effect=RuntimeError("GPU OOM")),
+        patch("src.pipeline.stream_character_reply", side_effect=_fake_stream("Greetings.")),
+        patch("src.pipeline.generate_talking_video", side_effect=RuntimeError("GPU OOM")),
     ):
         response = client.post(
             "/v1/vr-chat-sync",
@@ -227,7 +227,7 @@ def test_vr_chat_video_failure_still_returns_audio(silent_wav_bytes, fake_speak)
 def test_vr_chat_session_id_persists(silent_wav_bytes, fake_speak):
     with (
         patch("vr_service.transcribe", return_value="Hi"),
-        patch("vr_service.stream_character_reply", side_effect=_fake_stream("Hello there.")),
+        patch("src.pipeline.stream_character_reply", side_effect=_fake_stream("Hello there.")),
     ):
         r1 = client.post(
             "/v1/vr-chat-sync",
@@ -269,7 +269,7 @@ def test_vr_chat_short_sentences_get_folded_together(silent_wav_bytes, fake_spea
     in at the endpoint level too, not just in test_sentence_splitter.py."""
     with (
         patch("vr_service.transcribe", return_value="Hi"),
-        patch("vr_service.stream_character_reply", side_effect=_fake_stream("Ah, a wish!", "Bold choice.")),
+        patch("src.pipeline.stream_character_reply", side_effect=_fake_stream("Ah, a wish!", "Bold choice.")),
     ):
         response = client.post(
             "/v1/vr-chat-sync",

@@ -25,26 +25,22 @@ frontend, etc.) is decided on later:
 import json
 import logging
 import os
-import shutil
 import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydub import AudioSegment
 
 from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTER_IMAGES, CHARACTERS
-from src.lipsync import generate_talking_video
-from src.llm import init_conversation_histories, stream_character_reply
-from src.sentence_splitter import split_into_sentences
+from src.llm import init_conversation_histories
 from src.stt import transcribe
 from src.tts import speak
-from datetime import datetime, timezone
-from contextlib import asynccontextmanager
+from src.pipeline import combine_audio, generate_video_if_applicable, stream_reply_sentences
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -208,6 +204,7 @@ def _cleanup_loop():
         except Exception:
             log.error("Cleanup sweep failed", exc_info=True)
 
+
 def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
     """Return (session_id, histories_dict). Creates a new session if the
     given session_id is missing or unknown."""
@@ -264,17 +261,9 @@ def vr_chat_sync_endpoint(
             )
 
         full_assistant_reply = ""
-        buffer = ""
-        for delta in stream_character_reply(character_name, user_text, history):
-            buffer += delta
-            sentences, buffer = split_into_sentences(buffer)
-            for sentence in sentences:
-                full_assistant_reply += sentence + " "
-                sentence_audio_paths.append(speak(sentence, character_name))
-
-        if buffer.strip():
-            full_assistant_reply += buffer.strip()
-            sentence_audio_paths.append(speak(buffer.strip(), character_name))
+        for sentence in stream_reply_sentences(character_name, user_text, history):
+            full_assistant_reply += sentence + " "
+            sentence_audio_paths.append(speak(sentence, character_name))
 
         if not sentence_audio_paths:
             raise HTTPException(
@@ -282,10 +271,7 @@ def vr_chat_sync_endpoint(
                 detail={"code": "llm_unavailable", "message": "Failed to synthesize vocal replies."},
             )
 
-        combined = AudioSegment.empty()
-        for path in sentence_audio_paths:
-            combined += AudioSegment.from_wav(path)
-        combined.export(combined_wav_path, format="wav")
+        combine_audio(sentence_audio_paths, output_path=combined_wav_path)
 
         for path in sentence_audio_paths:
             if os.path.exists(path):
@@ -294,14 +280,11 @@ def vr_chat_sync_endpoint(
         video_url = None
         video_error = None
         if character_name not in AUDIO_ONLY_CHARACTERS:
-            try:
-                video_filename = f"{request_id}.mp4"
-                video_output_path = str(OUTPUT_DIR / video_filename)
-                generate_talking_video(character_name, combined_wav_path, output_path=video_output_path)
-                video_url = f"/files/{video_filename}"
-            except Exception as e:
-                log.error("Video generation failed: %s", e, exc_info=True)
-                video_error = "video_failed"
+            video_filename = f"{request_id}.mp4"
+            video_path, video_error = generate_video_if_applicable(
+                character_name, combined_wav_path, output_path=str(OUTPUT_DIR / video_filename)
+            )
+            video_url = f"/files/{video_filename}" if video_path else None
 
         return JSONResponse(
             content={
@@ -376,7 +359,6 @@ def vr_chat_stream_endpoint(
             yield _format_sse("transcript", {"session_id": effective_session_id, "user_transcript": user_text})
 
             full_assistant_reply = ""
-            buffer = ""
 
             def handle_sentence(sentence_text: str) -> str:
                 nonlocal full_assistant_reply
@@ -385,27 +367,28 @@ def vr_chat_stream_endpoint(
                 sentence_files.append(raw_path)
                 request_id = uuid.uuid4().hex
                 public_path = OUTPUT_DIR / f"{request_id}.wav"
-                shutil.copy(raw_path, public_path)
+                # speak() already writes a wav; copy it out to the public /files dir
+                # under a fresh id so the client has an immediately fetchable URL.
+                with open(raw_path, "rb") as src, open(public_path, "wb") as dst:
+                    dst.write(src.read())
                 return request_id
 
             t_first_token = None
-            t_first_sentence = None
-            for delta in stream_character_reply(character_name, user_text, history):
-                if t_first_token is None:
-                    t_first_token = time.time()
-                    log.info("TIMING first_llm_token=%.2fs (since request start)", t_first_token - t_start)
-                buffer += delta
-                sentences, buffer = split_into_sentences(buffer)
-                for sentence in sentences:
-                    request_id = handle_sentence(sentence)
-                    if t_first_sentence is None:
-                        t_first_sentence = time.time()
-                        log.info("TIMING first_sentence_ready=%.2fs (since request start)", t_first_sentence - t_start)
-                    yield _format_sse("sentence_audio", {"text": sentence, "audio_url": f"/files/{request_id}.wav"})
 
-            if buffer.strip():
-                request_id = handle_sentence(buffer.strip())
-                yield _format_sse("sentence_audio", {"text": buffer.strip(), "audio_url": f"/files/{request_id}.wav"})
+            def _mark_first_token():
+                nonlocal t_first_token
+                t_first_token = time.time()
+                log.info("TIMING first_llm_token=%.2fs (since request start)", t_first_token - t_start)
+
+            t_first_sentence = None
+            for sentence in stream_reply_sentences(
+                character_name, user_text, history, on_first_token=_mark_first_token
+            ):
+                request_id = handle_sentence(sentence)
+                if t_first_sentence is None:
+                    t_first_sentence = time.time()
+                    log.info("TIMING first_sentence_ready=%.2fs (since request start)", t_first_sentence - t_start)
+                yield _format_sse("sentence_audio", {"text": sentence, "audio_url": f"/files/{request_id}.wav"})
 
             yield _format_sse("reply_text", {"character_transcript": full_assistant_reply.strip()})
 
@@ -415,23 +398,19 @@ def vr_chat_stream_endpoint(
                 )
                 return
 
-            combined = AudioSegment.empty()
-            for path in sentence_files:
-                combined += AudioSegment.from_wav(path)
             combined_request_id = uuid.uuid4().hex
             combined_wav_path = str(OUTPUT_DIR / f"{combined_request_id}.wav")
-            combined.export(combined_wav_path, format="wav")
+            combine_audio(sentence_files, output_path=combined_wav_path)
 
             video_url = None
             if character_name not in AUDIO_ONLY_CHARACTERS:
-                try:
-                    video_filename = f"{combined_request_id}.mp4"
-                    video_output_path = str(OUTPUT_DIR / video_filename)
-                    generate_talking_video(character_name, combined_wav_path, output_path=video_output_path)
-                    video_url = f"/files/{video_filename}"
-                except Exception as e:
-                    log.error("Video generation failed: %s", e, exc_info=True)
-                    yield _format_sse("error", {"code": "video_failed", "message": str(e)})
+                video_filename = f"{combined_request_id}.mp4"
+                video_path, video_error = generate_video_if_applicable(
+                    character_name, combined_wav_path, output_path=str(OUTPUT_DIR / video_filename)
+                )
+                video_url = f"/files/{video_filename}" if video_path else None
+                if video_error:
+                    yield _format_sse("error", {"code": video_error, "message": "Video generation failed"})
 
             yield _format_sse("video", {"video_url": video_url})
             yield _format_sse("done", {})
