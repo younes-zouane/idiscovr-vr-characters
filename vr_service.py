@@ -152,7 +152,10 @@ def vr_chat_sync_endpoint(
     lip-synced video — not the raw bytes.
     """
     if character_name not in CHARACTERS:
-        raise HTTPException(status_code=400, detail=f"Character '{character_name}' not found.")
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_character", "message": f"Character '{character_name}' not found."},
+        )
 
     effective_session_id, histories = get_or_create_session(session_id)
     history = histories[character_name]
@@ -171,9 +174,9 @@ def vr_chat_sync_endpoint(
 
         user_text = transcribe(temp_mic_path)
         if not user_text:
-            return JSONResponse(
+            raise HTTPException(
                 status_code=400,
-                content={"error": "Could not understand incoming VR mic data."},
+                detail={"code": "stt_failed", "message": "Could not understand incoming VR mic data."},
             )
 
         full_assistant_reply = ""
@@ -190,7 +193,10 @@ def vr_chat_sync_endpoint(
             sentence_audio_paths.append(speak(buffer.strip(), character_name))
 
         if not sentence_audio_paths:
-            raise HTTPException(status_code=500, detail="Failed to synthesize vocal replies.")
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "llm_unavailable", "message": "Failed to synthesize vocal replies."},
+            )
 
         combined = AudioSegment.empty()
         for path in sentence_audio_paths:
@@ -202,11 +208,16 @@ def vr_chat_sync_endpoint(
                 os.remove(path)
 
         video_url = None
+        video_error = None
         if character_name not in AUDIO_ONLY_CHARACTERS:
-            video_filename = f"{request_id}.mp4"
-            video_output_path = str(OUTPUT_DIR / video_filename)
-            generate_talking_video(character_name, combined_wav_path, output_path=video_output_path)
-            video_url = f"/files/{video_filename}"
+            try:
+                video_filename = f"{request_id}.mp4"
+                video_output_path = str(OUTPUT_DIR / video_filename)
+                generate_talking_video(character_name, combined_wav_path, output_path=video_output_path)
+                video_url = f"/files/{video_filename}"
+            except Exception as e:
+                log.error("Video generation failed: %s", e, exc_info=True)
+                video_error = "video_failed"
 
         return JSONResponse(
             content={
@@ -217,12 +228,18 @@ def vr_chat_sync_endpoint(
                 "character_transcript": full_assistant_reply.strip(),
                 "voice_audio_url": f"/files/{request_id}.wav",
                 "talking_video_url": video_url,
+                "video_error": video_error,
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("VR pipeline error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "pipeline_failed", "message": "Internal pipeline error."},
+        )
 
     finally:
         _gpu_slot.release()
@@ -246,7 +263,10 @@ def vr_chat_stream_endpoint(
     it becomes ready instead of one JSON blob at the end.
     """
     if character_name not in CHARACTERS:
-        raise HTTPException(status_code=400, detail=f"Character '{character_name}' not found.")
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_character", "message": f"Character '{character_name}' not found."},
+        )
 
     effective_session_id, histories = get_or_create_session(session_id)
     history = histories[character_name]
