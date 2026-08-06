@@ -43,6 +43,8 @@ from src.llm import init_conversation_histories, stream_character_reply
 from src.sentence_splitter import split_into_sentences
 from src.stt import transcribe
 from src.tts import speak
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -65,7 +67,22 @@ if "CUDAExecutionProvider" not in _providers:
 else:
     log.info("CUDAExecutionProvider confirmed available.")
 
-app = FastAPI(title="VR Character Animation Headless Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    thread = threading.Thread(target=_cleanup_loop, daemon=True)
+    thread.start()
+    log.info(
+        "Cleanup thread started (interval=%ds, file max age=%ds, session max idle=%ds).",
+        CLEANUP_INTERVAL_SECONDS,
+        OUTPUT_MAX_AGE_SECONDS,
+        SESSION_MAX_IDLE_SECONDS,
+    )
+    yield
+    # Nothing needed on shutdown — the thread is a daemon, it dies with the process.
+
+
+app = FastAPI(title="VR Character Animation Headless Service", lifespan=lifespan)
 
 # Directory for generated audio/video files served back to VR clients as URLs.
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "idiscovr_vr_outputs"
@@ -125,15 +142,82 @@ _sessions_lock = threading.Lock()
 # silently queueing behind degraded work.
 _gpu_slot = threading.Semaphore(1)
 
+# --- Cleanup: prevent unbounded growth of OUTPUT_DIR and _sessions ---
+OUTPUT_MAX_AGE_SECONDS = 30 * 60      # delete generated files older than this
+SESSION_MAX_IDLE_SECONDS = 30 * 60    # evict sessions untouched for this long
+CLEANUP_INTERVAL_SECONDS = 5 * 60     # how often the background sweep runs
+
+# Tracks last-touched time per session_id, kept separate from _sessions
+# itself so get_or_create_session's existing return shape (session_id,
+# histories_dict) doesn't change and nothing else has to know about this.
+_session_last_used: dict[str, float] = {}
+
+
+def cleanup_once(now: float | None = None) -> dict:
+    """
+    One sweep: delete files in OUTPUT_DIR older than OUTPUT_MAX_AGE_SECONDS,
+    evict _sessions entries idle longer than SESSION_MAX_IDLE_SECONDS.
+
+    Takes `now` as an optional injectable timestamp so tests can simulate
+    age without sleeping for real minutes. Returns counts for logging/tests.
+    """
+    now = now if now is not None else time.time()
+
+    deleted_files = 0
+    for path in OUTPUT_DIR.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            age = now - path.stat().st_mtime
+        except FileNotFoundError:
+            continue  # deleted concurrently, fine
+        if age > OUTPUT_MAX_AGE_SECONDS:
+            try:
+                path.unlink()
+                deleted_files += 1
+            except FileNotFoundError:
+                pass
+
+    evicted_sessions = 0
+    with _sessions_lock:
+        stale_ids = [
+            sid
+            for sid, last_used in _session_last_used.items()
+            if now - last_used > SESSION_MAX_IDLE_SECONDS
+        ]
+        for sid in stale_ids:
+            _sessions.pop(sid, None)
+            _session_last_used.pop(sid, None)
+            evicted_sessions += 1
+
+    if deleted_files or evicted_sessions:
+        log.info(
+            "Cleanup sweep: deleted %d output file(s), evicted %d idle session(s).",
+            deleted_files,
+            evicted_sessions,
+        )
+    return {"deleted_files": deleted_files, "evicted_sessions": evicted_sessions}
+
+
+def _cleanup_loop():
+    """Runs forever in a background thread, sweeping every CLEANUP_INTERVAL_SECONDS."""
+    while True:
+        time.sleep(CLEANUP_INTERVAL_SECONDS)
+        try:
+            cleanup_once()
+        except Exception:
+            log.error("Cleanup sweep failed", exc_info=True)
 
 def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
     """Return (session_id, histories_dict). Creates a new session if the
     given session_id is missing or unknown."""
     with _sessions_lock:
         if session_id and session_id in _sessions:
+            _session_last_used[session_id] = time.time()
             return session_id, _sessions[session_id]
         new_id = session_id or str(uuid.uuid4())
         _sessions[new_id] = init_conversation_histories()
+        _session_last_used[new_id] = time.time()
         return new_id, _sessions[new_id]
 
 
