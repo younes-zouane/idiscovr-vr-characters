@@ -10,10 +10,11 @@ from pydub import AudioSegment
 
 from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS, IDLE_LOOPS
 from src.lipsync import generate_talking_video
-from src.llm import ask_character, init_conversation_histories, prewarm_model, stream_character_reply
-from src.sentence_splitter import split_into_sentences
+from src.llm import ask_character, init_conversation_histories, prewarm_model
 from src.stt import transcribe
 from src.tts import speak
+from src.pipeline import combine_audio, generate_video_if_applicable, stream_reply_sentences
+
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +27,9 @@ def _llm_producer(character_name, message, history, sentence_queue):
     sentence 1 while this thread is still generating sentence 2. Pushes
     None as a sentinel when there's nothing more coming (success or error).
     """
-    buffer = ""
     try:
-        for delta in stream_character_reply(character_name, message, history):
-            buffer += delta
-            sentences, buffer = split_into_sentences(buffer)
-            for sentence in sentences:
-                sentence_queue.put(sentence)
-        if buffer.strip():
-            sentence_queue.put(buffer.strip())  # flush a trailing fragment with no closing punctuation
+        for sentence in stream_reply_sentences(character_name, message, history):
+            sentence_queue.put(sentence)
     except Exception as e:
         log.error(f"LLM stream failed for {character_name}: {e}", exc_info=True)
     finally:
@@ -113,21 +108,13 @@ def chat_with_character(character_name, mic_audio, session_histories):
     # before streaming existed. This file is never re-sent to the audio
     # player (it was already heard sentence-by-sentence) — it only feeds
     # the lip-sync video generator.
-    combined = AudioSegment.empty()
-    for path in sentence_audio_paths:
-        combined += AudioSegment.from_wav(path)  # samples, not filename concatenation
-    combined_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
-    combined.export(combined_path, format="wav")
+    
+    combined_path = combine_audio(sentence_audio_paths)
 
     for path in sentence_audio_paths:
         os.remove(path)
 
-    video_path = None
-    if character_name not in AUDIO_ONLY_CHARACTERS:
-        try:
-            video_path = generate_talking_video(character_name, combined_path)
-        except Exception as e:
-            log.error(f"Video generation failed for {character_name}: {e}", exc_info=True)
+    video_path, _ = generate_video_if_applicable(character_name, combined_path)
     t3 = time.time()
 
     log.info(f"STT (Whisper):        {t1 - t0:.2f}s")
