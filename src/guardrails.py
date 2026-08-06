@@ -11,9 +11,23 @@ this module only does the free stuff.
 """
 
 import re
+import os
+import time
+import logging
+from openai import OpenAI
+
+from . import config
 
 MAX_INPUT_CHARS = 500
 MAX_REPLY_SENTENCES = 6
+
+log = logging.getLogger(__name__)  # reuse if guardrails.py already has this from Layer 2; don't redeclare
+
+GUARD_MODEL_NAME = os.environ.get("GUARD_MODEL_NAME", "llama-guard3:1b")
+GUARD_ENABLED = os.environ.get("GUARD_ENABLED", "true").lower() == "true"
+GUARD_TIMEOUT_SECONDS = float(os.environ.get("GUARD_TIMEOUT_SECONDS", "0.3"))  # the 300ms hard budget
+
+_guard_client = OpenAI(api_key="ollama", base_url=config.OLLAMA_BASE_URL)
 
 # Patterns aimed at getting the model to drop its system prompt or
 # character. Deliberately broad/lowercase-substring matching rather than
@@ -95,3 +109,42 @@ def clean_sentence(sentence: str) -> str:
     for pattern in _AI_LEAKAGE_PATTERNS:
         cleaned = pattern.sub("", cleaned).strip()
     return cleaned
+
+
+def check_output_with_guard_model(user_text: str, generated_sentence: str) -> tuple[bool, str | None]:
+    """
+    Layer 3: asks a small guard model whether the first generated sentence
+    is safe, given the user's message that prompted it. Only meant to be
+    called once per reply, on the first sentence — see pipeline.py.
+
+    Fails OPEN (returns allowed=True) on timeout, error, or unparseable
+    output — a slow/broken guard check should never add latency to a
+    normal reply. If this fires often, GUARD_ENABLED should be set to
+    false and the reason documented in KNOWN_ISSUES.md, per the guide's
+    own instruction to drop Layer 3 rather than miss the latency budget.
+    """
+    if not GUARD_ENABLED:
+        return True, None
+
+    t0 = time.time()
+    try:
+        response = _guard_client.chat.completions.create(
+            model=GUARD_MODEL_NAME,
+            messages=[
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": generated_sentence},
+            ],
+            timeout=GUARD_TIMEOUT_SECONDS,
+        )
+        elapsed = time.time() - t0
+        log.info("TIMING guard_check=%.3fs", elapsed)
+
+        verdict = (response.choices[0].message.content or "").strip().lower()
+        if verdict.startswith("unsafe"):
+            return False, "guard_model_unsafe"
+        return True, None
+
+    except Exception as e:
+        elapsed = time.time() - t0
+        log.warning("Guard model check failed/timed out after %.3fs, failing open: %s", elapsed, e)
+        return True, None

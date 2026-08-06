@@ -24,7 +24,12 @@ from src.characters import AUDIO_ONLY_CHARACTERS, CHARACTERS
 from src.lipsync import generate_talking_video
 from src.llm import stream_character_reply
 from src.sentence_splitter import split_into_sentences
-from src.guardrails import MAX_REPLY_SENTENCES, check_input, clean_sentence
+from src.guardrails import (
+    MAX_REPLY_SENTENCES,
+    check_input,
+    check_output_with_guard_model,
+    clean_sentence,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +37,18 @@ log = logging.getLogger(__name__)
 def stream_reply_sentences(character_name, user_text, history, on_first_token=None):
     """
     Streams the character's LLM reply and yields each completed sentence
-    as plain text. Runs Layer 2 guardrails first: a blocked input never
-    reaches the LLM at all — it yields the character's own refusal line
-    (from characters.py) as the single "sentence" and returns immediately,
-    which is why a blocked reply is faster than a normal one.
+    as plain text.
+
+    Guardrails, in order:
+    - Layer 2 (check_input): a blocked input never reaches the LLM at all —
+      yields the character's own refusal line and returns immediately,
+      which is why a blocked reply is faster than a normal one.
+    - Layer 3 (check_output_with_guard_model): runs exactly once, on the
+      FIRST completed sentence only, before it's yielded. If the guard
+      model flags it, the refusal line is yielded instead and generation
+      stops there — nothing unsafe ever reaches speak(). Every sentence
+      after the first is not re-checked (cost/latency tradeoff — see
+      guardrails.py docstring).
     """
     allowed, reason = check_input(user_text)
     if not allowed:
@@ -44,6 +57,7 @@ def stream_reply_sentences(character_name, user_text, history, on_first_token=No
 
     buffer = ""
     first_token_seen = False
+    first_sentence_checked = False
     sentence_count = 0
     for delta in stream_character_reply(character_name, user_text, history):
         if not first_token_seen:
@@ -55,11 +69,24 @@ def stream_reply_sentences(character_name, user_text, history, on_first_token=No
         for sentence in sentences:
             if sentence_count >= MAX_REPLY_SENTENCES:
                 return  # cap hit — stop pulling more from the LLM stream
+
+            if not first_sentence_checked:
+                first_sentence_checked = True
+                safe, guard_reason = check_output_with_guard_model(user_text, sentence)
+                if not safe:
+                    yield CHARACTERS[character_name]["refusal"]
+                    return
+
             cleaned = clean_sentence(sentence)
             if cleaned:
                 sentence_count += 1
                 yield cleaned
+
     if buffer.strip() and sentence_count < MAX_REPLY_SENTENCES:
+        # Note: if the ENTIRE reply was one unpunctuated fragment (no
+        # sentence boundary ever hit), first_sentence_checked is still
+        # False here — this fragment never goes through Layer 3. Same
+        # tradeoff as above; flagging it rather than hiding it.
         cleaned = clean_sentence(buffer.strip())
         if cleaned:
             yield cleaned
