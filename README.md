@@ -6,6 +6,9 @@ and a lip-synced talking-head video generated on your own GPU.
 
 Built as part of an internship assignment for iDISCOVR.
 
+![Architecture: client through API, STT, LLM, TTS, lip-sync, and back](docs/measurements/architecture-diagram.svg)
+
+
 ## Characters
 
 - **The Genie** — loud, theatrical showman
@@ -171,7 +174,7 @@ strong contrast in both writing style and voice.
   get fully separate conversation histories. Conversation history is also
   automatically capped (oldest messages trimmed, system prompt always kept)
   so long conversations don't grow the LLM context unboundedly.
-- Speech auto-detects language — speak French, get a French reply.
+Language: Speech input is transcribed with Whisper, which does detect the spoken language, but the pipeline currently only speaks replies back in English (Kokoro TTS is configured with lang_code="a", American English voices). Speaking in another language will still get a reply, but it'll be read aloud in an American English voice.
 - The Cave of Wonders gets a post-processing echo/pitch effect for extra atmosphere.
 - Model weights (`.onnx`, `.pth`) and the Ollama model are **not committed to this repo** —
   they're downloaded locally per the setup steps above (see `.gitignore`).
