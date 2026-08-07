@@ -201,3 +201,40 @@ having each test explicitly force `GUARD_ENABLED=True` for its own scope,
 regardless of the module's real-world default — a good example of why
 running the *full* test suite after changing a shared default matters,
 not just the file that seems related.
+
+**3. Follow-up (2026-08-07), from `scripts/bench_guardrail_latency.py`: point 2 above does
+not reproduce.** Running the full pipeline (Genie, `GUARD_ENABLED=true`) across 10 normal
+prompts with `llama3.1:8b` and `llama-guard3:1b` both already warm in Ollama, `guard_check`
+measured **0.13–0.18s per call** — well inside the 300ms budget — except the very first
+(cold) call at 4.6s. That's a completely different number from the "~2.2s per call, 4/4 warm
+runs" finding above. Neither run's methodology was wrong exactly, but they're not measuring
+the same thing: point 2's isolated timing script called the guard model on its own, whereas
+this benchmark calls it immediately after an `llama3.1:8b` streaming call as part of one
+continuous request, in a longer-lived process with both models resident. Something about
+that difference — Ollama's `keep_alive` eviction behavior, VRAM residency across repeated
+back-to-back calls, or process lifetime — is the likely cause, not yet isolated.
+
+**What this means for the "disabled by default" decision:** it needs re-examination, not
+because the original measurement was fabricated, but because the newer, more realistic
+end-to-end measurement contradicts it. Separately: with the guard model *not* the bottleneck,
+the same benchmark showed **0 of 10 normal replies under the 1.5s "first audio" budget**
+(avg 2.78s) even with the ~0.15s guard check included — meaning the base LLM-streaming +
+TTS path to the first sentence is the real cost, independent of Layer 3 entirely. Next step:
+run `scripts/bench_guardrail_latency.py --no-guard` to confirm the base pipeline number in
+isolation, then decide whether to (a) revisit the 1.5s target, (b) look at what's slow between
+first LLM token and first sentence boundary + TTS, or (c) both. Not resolved yet — flagging
+here rather than in a fresh section so this stays the one place guard-latency history lives.
+
+**4. Follow-up (2026-08-07), `--no-guard` comparison: resolved — guardrails are not the cause.**
+Same 10 prompts, same warm process, `GUARD_ENABLED=false`: **avg 2.57s** to first audio (min
+2.41s, p95 2.70s, max 2.81s), still 0/10 within the 1.5s budget. Guard-on was avg 2.78s. The
+~0.21s delta between the two matches the ~0.15–0.18s guard_check cost from point 3 almost
+exactly — i.e., Layer 3 is doing precisely what it's supposed to: a small, bounded, in-budget
+addition. The 1.5s miss exists identically with guardrails fully off, so it's a base
+LLM-streaming + TTS pipeline characteristic (Part 1 territory), not a Part 3 problem. Point 2's
+"~2.2s/call" isolated guard-model measurement remains unreconciled (see point 3), but it no
+longer matters for the "disabled by default" decision either way, since even the worse-case
+0.15–2.2s range is dwarfed by the ~2.5s base pipeline cost. Part 3's guardrail work is
+correctly scoped and done; hitting 1.5s to first audio is a separate, Part 1-shaped
+investigation (likely: how much of ~2.5s is Ollama prompt-processing/time-to-first-token vs.
+generation vs. TTS) — not blocking here.

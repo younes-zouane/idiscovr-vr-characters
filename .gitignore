@@ -43,3 +43,10 @@ results/
 =0.9.4
 
 model_cache/
+
+# Generated red-team/latency reports — regenerated every run by
+# tests/redteam/test_redteam.py and scripts/bench_guardrail_latency.py.
+# The numbers that matter are published in README.md / KNOWN_ISSUES.md;
+# these are local run artifacts, not source.
+tests/redteam/redteam_report.md
+tests/redteam/latency_report*.md
