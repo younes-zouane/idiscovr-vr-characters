@@ -10,5 +10,5 @@ stt_model = WhisperModel(
 
 
 def transcribe(filepath):
-    segments, info = stt_model.transcribe(filepath, beam_size=5)
+    segments, info = stt_model.transcribe(filepath, beam_size=5, language="en")
     return " ".join(segment.text for segment in segments).strip()
