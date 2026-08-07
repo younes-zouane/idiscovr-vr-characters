@@ -10,10 +10,11 @@ Layer 1 (per-character refusal lines, in characters.py) and Layer 3
 this module only does the free stuff.
 """
 
-import re
-import os
-import time
 import logging
+import os
+import re
+import time
+
 from openai import OpenAI
 
 from . import config
@@ -24,10 +25,30 @@ MAX_REPLY_SENTENCES = 6
 log = logging.getLogger(__name__)  # reuse if guardrails.py already has this from Layer 2; don't redeclare
 
 GUARD_MODEL_NAME = os.environ.get("GUARD_MODEL_NAME", "llama-guard3:1b")
-GUARD_ENABLED = os.environ.get("GUARD_ENABLED", "true").lower() == "true"
-GUARD_TIMEOUT_SECONDS = float(os.environ.get("GUARD_TIMEOUT_SECONDS", "0.3"))  # the 300ms hard budget
+# Default OFF: measured ~2.2s per call for llama-guard3:1b on this hardware
+# (5 real single-attempt runs, 2.190-2.207s on the 4 warm ones) — ~7x over
+# the 300ms budget this project's guide sets. See KNOWN_ISSUES.md for the
+# full write-up. Set GUARD_ENABLED=true to re-enable if faster hardware or
+# a smaller/quantized guard model changes this later.
+GUARD_ENABLED = os.environ.get("GUARD_ENABLED", "false").lower() == "true"
+# GUARD_BUDGET_SECONDS: the design threshold from Guide 4 ("hard budget:
+# 300ms, if it can't hit that, drop it"). This is NOT the API call's
+# timeout — it's what logged guard_check timings get compared against to
+# decide whether GUARD_ENABLED should stay true. Conflating this with the
+# actual request timeout previously guaranteed every real call would time
+# out before finishing, regardless of the model's true speed.
+GUARD_BUDGET_SECONDS = float(os.environ.get("GUARD_BUDGET_SECONDS", "0.3"))
 
-_guard_client = OpenAI(api_key="ollama", base_url=config.OLLAMA_BASE_URL)
+# The actual per-call network timeout — generous, so a real inference call
+# has a genuine chance to complete and be measured. This is a safety net
+# against a truly hung request, not an enforcement of the budget above.
+GUARD_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GUARD_REQUEST_TIMEOUT_SECONDS", "5.0"))
+
+# max_retries=0: a slow/failed guard call should fail once and fail open
+# immediately, not retry 2x with exponential backoff — that turns one
+# timeout into a guaranteed multi-second stall regardless of the model's
+# real speed, which is exactly what was happening before this was set.
+_guard_client = OpenAI(api_key="ollama", base_url=config.OLLAMA_BASE_URL, max_retries=0)
 
 # Patterns aimed at getting the model to drop its system prompt or
 # character. Deliberately broad/lowercase-substring matching rather than
@@ -134,10 +155,16 @@ def check_output_with_guard_model(user_text: str, generated_sentence: str) -> tu
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": generated_sentence},
             ],
-            timeout=GUARD_TIMEOUT_SECONDS,
+            timeout=GUARD_REQUEST_TIMEOUT_SECONDS,
         )
         elapsed = time.time() - t0
-        log.info("TIMING guard_check=%.3fs", elapsed)
+        over_budget = elapsed > GUARD_BUDGET_SECONDS
+        log.info(
+            "TIMING guard_check=%.3fs (budget=%.2fs, %s)",
+            elapsed,
+            GUARD_BUDGET_SECONDS,
+            "OVER BUDGET" if over_budget else "within budget",
+        )
 
         verdict = (response.choices[0].message.content or "").strip().lower()
         if verdict.startswith("unsafe"):

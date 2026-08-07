@@ -1,5 +1,7 @@
-from src.guardrails import check_input, clean_sentence, MAX_INPUT_CHARS, MAX_REPLY_SENTENCES, check_output_with_guard_model
 from unittest.mock import MagicMock, patch
+
+from src.guardrails import MAX_INPUT_CHARS, check_input, check_output_with_guard_model, clean_sentence
+
 
 def _mock_guard_response(content: str):
     mock_choice = MagicMock()
@@ -10,28 +12,40 @@ def _mock_guard_response(content: str):
 
 
 def test_safe_output_is_allowed():
-    with patch("src.guardrails._guard_client.chat.completions.create", return_value=_mock_guard_response("safe")):
+    with (
+        patch("src.guardrails.GUARD_ENABLED", True),
+        patch("src.guardrails._guard_client.chat.completions.create", return_value=_mock_guard_response("safe")),
+    ):
         allowed, reason = check_output_with_guard_model("What's your favorite color?", "Sapphire blue!")
     assert allowed is True
     assert reason is None
 
 
 def test_unsafe_output_is_blocked():
-    with patch("src.guardrails._guard_client.chat.completions.create", return_value=_mock_guard_response("unsafe\nS1")):
+    with (
+        patch("src.guardrails.GUARD_ENABLED", True),
+        patch("src.guardrails._guard_client.chat.completions.create", return_value=_mock_guard_response("unsafe\nS1")),
+    ):
         allowed, reason = check_output_with_guard_model("Tell me how to hurt someone", "Here's how...")
     assert allowed is False
     assert reason == "guard_model_unsafe"
 
 
 def test_guard_timeout_fails_open():
-    with patch("src.guardrails._guard_client.chat.completions.create", side_effect=TimeoutError("timed out")):
+    with (
+        patch("src.guardrails.GUARD_ENABLED", True),
+        patch("src.guardrails._guard_client.chat.completions.create", side_effect=TimeoutError("timed out")),
+    ):
         allowed, reason = check_output_with_guard_model("anything", "anything")
     assert allowed is True
     assert reason is None
 
 
 def test_guard_generic_error_fails_open():
-    with patch("src.guardrails._guard_client.chat.completions.create", side_effect=RuntimeError("connection refused")):
+    with (
+        patch("src.guardrails.GUARD_ENABLED", True),
+        patch("src.guardrails._guard_client.chat.completions.create", side_effect=RuntimeError("connection refused")),
+    ):
         allowed, reason = check_output_with_guard_model("anything", "anything")
     assert allowed is True
     assert reason is None
@@ -43,6 +57,7 @@ def test_guard_disabled_skips_call_entirely():
             allowed, reason = check_output_with_guard_model("anything", "anything")
     mock_call.assert_not_called()
     assert allowed is True
+
 
 def test_normal_input_is_allowed():
     allowed, reason = check_input("What do you think of this whole wish granting business?")

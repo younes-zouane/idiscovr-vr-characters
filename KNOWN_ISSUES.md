@@ -150,3 +150,54 @@ use case. WebSockets would be the right choice later if hands-free
 continuous listening is built, since that needs the client to stream audio
 to the server too, which SSE can't do.
 
+
+
+
+## Using httpx with starlette.testclient is deprecated; install httpx2 instead found on TestClient related deprecation from version of starlette/fastapi i am on
+
+
+## Guardrails Layer 3 (guard-model check): disabled by default — measured
+
+**Status:** Implemented and functional, but disabled by default (`GUARD_ENABLED=false`).
+
+Two separate things were found while measuring this, in order:
+
+**1. Bug found and fixed: timeout/retry conflation guaranteed failure regardless of real speed.**
+The guard model's per-call API timeout was set to the same value as the
+*design budget* itself (300ms). Combined with the OpenAI client's default
+`max_retries=2`, every single call timed out at 300ms and then retried
+twice more with backoff — turning one 300ms budget into a guaranteed
+~3.1s failure on every call, 5/5 times measured, regardless of how fast
+the guard model actually was. Fixed by separating `GUARD_BUDGET_SECONDS`
+(the 300ms design threshold — comparison only, never passed to the API)
+from `GUARD_REQUEST_TIMEOUT_SECONDS` (a generous 5s real network timeout),
+and setting `max_retries=0` on the guard client so a genuine failure fails
+open immediately instead of stacking retries.
+
+**2. Real finding, after the fix: the model itself is ~7x over budget.**
+With genuine single-attempt timing now possible, `llama-guard3:1b`
+measured a consistent **~2.2s per call** on this hardware — 2.190s,
+2.204s, 2.206s, 2.207s across 4 warm runs (a 17ms spread, not noise).
+`first_llm_token` timing was unaffected across these same runs (~2.7-2.8s,
+matching the pre-guardrail baseline), ruling out GPU/VRAM model-swap
+thrashing between `llama3.1:8b` and the guard model as the cause — this
+appears to be genuine, fixed inference cost for this guard model through
+Ollama on this hardware, not a config problem left to chase further.
+
+**Decision:** disabled by default, and set
+`GUARD_ENABLED=true` to re-enable if revisited later — first things to try
+would be a smaller/more quantized guard model, or a non-Ollama-served
+guard model (direct ONNX/transformers inference, bypassing the
+OpenAI-compatible HTTP layer) to see if that overhead is what's costing
+the extra time.!!!
+
+**Side effect caught while fixing this:** flipping `GUARD_ENABLED`'s
+default from `true` to `false` silently broke the assumption behind three
+existing tests (`test_safe_output_is_allowed`, `test_guard_timeout_fails_open`,
+`test_guard_generic_error_fails_open`) — each short-circuited past its own
+mocked/side-effect behavior before ever exercising it, so two of the three
+were passing for the wrong reason and one genuinely failed. Fixed by
+having each test explicitly force `GUARD_ENABLED=True` for its own scope,
+regardless of the module's real-world default — a good example of why
+running the *full* test suite after changing a shared default matters,
+not just the file that seems related.
