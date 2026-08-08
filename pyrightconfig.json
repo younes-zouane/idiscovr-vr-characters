@@ -1,0 +1,3 @@
+{
+  "extraPaths": ["./wav2lip-onnx-256"]
+}
